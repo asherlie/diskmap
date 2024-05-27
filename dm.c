@@ -66,9 +66,20 @@ struct diskmap{
 // and updates dm->bucket_locks
 void mmap_locks(struct diskmap* dm, char* lock_fn) {
     int fd = open(lock_fn, O_CREAT | O_RDWR, S_IRWXU);
-    ftruncate(fd, sizeof(pthread_mutex_t) * dm->n_buckets);
+    int target_sz = (sizeof(pthread_mutex_t) * dm->n_buckets);
+    _Bool exists = lseek(fd, 0, SEEK_END) == target_sz;
+    if (!exists) {
+        ftruncate(fd, target_sz);
+    }
+
+    dm->bucket_locks = mmap(0, target_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
+    if (dm->bucket_locks == MAP_FAILED) {
+        perror("mmap()");
+    }
+
     for (uint32_t i = 0; i < dm->n_buckets; ++i) {
-        pthread_mutex_init();
+        /*pthread_mutex_init();*/
     }
 }
 
