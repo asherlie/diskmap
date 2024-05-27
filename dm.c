@@ -66,7 +66,7 @@ struct entry_hdr{
 struct diskmap{
     char name[12];
     // hash_func(key, keysz, n_buckets)
-    int entries_in_mem;
+    /*int entries_in_mem;*/
     int (*hash_func)(void*, uint32_t, uint32_t);
     uint32_t n_buckets;
     char** bucket_fns;
@@ -105,7 +105,7 @@ void mmap_locks(struct diskmap* dm) {
 
 void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name, int (*hash_func)(void*, uint32_t, uint32_t)) {
     strcpy(dm->name, map_name);
-    dm->entries_in_mem = 19;
+    /*dm->entries_in_mem = 19;*/
     dm->hash_func = hash_func;
     dm->n_buckets = n_buckets;
     dm->bucket_sizes = malloc(sizeof(uint16_t) * dm->n_buckets);
@@ -125,14 +125,39 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     int fd = open(dm->bucket_fns[idx], O_CREAT | O_RDWR, S_IRWXU);
     off_t off = 0;
     struct entry_hdr* e;
+    uint8_t* data;
     pthread_mutex_lock(dm->bucket_locks + idx);
     for (uint16_t i = 0; i < dm->bucket_sizes[idx]; ++i) {
         e = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
+        // seek forward to read actual data
+        off += sizeof(struct entry_hdr);
         /* if keysizes are !=, we don't need to compare keys */
         if (e->ksz == keysz) {
+            data = mmap(0, e->ksz + e->vsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
+            if (!memcmp(data, key, keysz)) {
+                /* overwrite entry and exit if new val fits in old val allocation
+                 * otherwise, we have to fragment the bucket and erase this whole entry
+                 */
+                if (valsz <= e->vsz) {
+                    memcpy(data + keysz, val, valsz);
+                    goto cleanup;
+                }
+                // how do i mark this section as invalid without removing info about where next entry begins?
+                // easy - if value is set to 0, we will understand key as meaning where next chunk starts
+                // this is a great solution because is still allows us to increment off by ksz + vsz
+                /*memset(e, 0, sizeof(struct entry_hdr));*/
+                e->ksz += e->vsz;
+                e->vsz = 0;
+                break;
+            }
         }
-        off += e->ksz + e->vsz
+        // TODO: not sure if mmap increments filepos or if i need to use off
+        off += e->ksz + e->vsz;
     }
+
+    /* this is reached if no duplicates are found OR a k/v pair now requires more space */
+
+    cleanup:
     pthread_mutex_unlock(dm->bucket_locks + idx);
 }
 
