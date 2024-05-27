@@ -19,6 +19,7 @@
  *      int n_buckets;
  *      char* buckets[n_buckets] // file names
  *      int bucket_sizes[n_buckets]
+ *      int bucket_locks[n_buckets]
  *
  *
  * upon insertion we hash the key, find the bucket file for that key
@@ -50,10 +51,35 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <fcntl.h>
+#include <stdint.h>
+#include <pthread.h>
+#include <stdlib.h>
 
 struct diskmap{
-    
+    uint32_t n_buckets;
+    const char** bucket_fns;
+    uint16_t* bucket_sizes;
+    pthread_mutex_t* bucket_locks;
 };
+
+// creates an mmap()'d file or opens one if it exists
+// and updates dm->bucket_locks
+void mmap_locks(struct diskmap* dm, char* lock_fn) {
+    int fd = open(lock_fn, O_CREAT | O_RDWR, S_IRWXU);
+    ftruncate(fd, sizeof(pthread_mutex_t) * dm->n_buckets);
+    for (uint32_t i = 0; i < dm->n_buckets; ++i) {
+        pthread_mutex_init();
+    }
+}
+
+void init_diskmap(struct diskmap* dm, uint32_t n_buckets) {
+    dm->n_buckets = n_buckets;
+    /*dm->bucket_locks = malloc();*/
+    /*for (int i = 0; i < n_buckets*/
+    /*pthread_mutex_init();*/
+}
+void acquire_bucket_lock();
+void release_bucket_lock();
 
 int main(){
     void* ret;
@@ -71,6 +97,6 @@ int main(){
     while (1) {
         printf("%p: %i\n", ret, *val);
         ++(*val);
-        usleep(1000000);
+        usleep(1000);
     }
 }
