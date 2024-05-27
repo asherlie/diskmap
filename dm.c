@@ -46,6 +46,9 @@
  *  for (int i = 0; i < 
  *
  *
+ * TODO: write a #define wrapper so we can have strongly typed maps
+ * TODO: munmap
+ *
 */
 #include <sys/mman.h>
 #include <unistd.h>
@@ -56,8 +59,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+struct entry_hdr{
+    uint32_t ksz, vsz;
+};
+
 struct diskmap{
     char name[12];
+    // hash_func(key, keysz, n_buckets)
+    int entries_in_mem;
+    int (*hash_func)(void*, uint32_t, uint32_t);
     uint32_t n_buckets;
     char** bucket_fns;
     uint16_t* bucket_sizes;
@@ -93,8 +103,10 @@ void mmap_locks(struct diskmap* dm) {
     }
 }
 
-void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name) {
+void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name, int (*hash_func)(void*, uint32_t, uint32_t)) {
     strcpy(dm->name, map_name);
+    dm->entries_in_mem = 19;
+    dm->hash_func = hash_func;
     dm->n_buckets = n_buckets;
     dm->bucket_sizes = malloc(sizeof(uint16_t) * dm->n_buckets);
     dm->bucket_fns = malloc(sizeof(char*) * dm->n_buckets);
@@ -107,10 +119,25 @@ void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name) {
     /*for (int i = 0; i < n_buckets*/
     /*pthread_mutex_init();*/
 }
-void acquire_bucket_lock();
-void release_bucket_lock();
 
-int main(){
+void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* key, void* val) {
+    int idx = dm->hash_func(key, keysz, dm->n_buckets);
+    int fd = open(dm->bucket_fns[idx], O_CREAT | O_RDWR, S_IRWXU);
+    off_t off = 0;
+    struct entry_hdr* e;
+    pthread_mutex_lock(dm->bucket_locks + idx);
+    for (uint16_t i = 0; i < dm->bucket_sizes[idx]; ++i) {
+        e = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
+        /* if keysizes are !=, we don't need to compare keys */
+        if (e->ksz == keysz) {
+        }
+        off += e->ksz + e->vsz
+    }
+    pthread_mutex_unlock(dm->bucket_locks + idx);
+}
+
+
+int o_main(){
     void* ret;
     int* val;
     int fd = open("MM", O_CREAT | O_RDWR, S_IRWXU);
@@ -128,4 +155,9 @@ int main(){
         ++(*val);
         usleep(1000);
     }
+}
+
+int main() {
+    struct diskmap dm;
+    init_diskmap(&dm, 10, "TESTMAP", NULL);
 }
