@@ -128,6 +128,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     int fd = open(dm->bucket_fns[idx], O_CREAT | O_RDWR, S_IRWXU);
     /* TODO: need to truncate file to correct size if file does not exist, maybe like 2x needed size */
     off_t off = 0;
+    off_t insertion_offset = -1;
     struct entry_hdr* e;
     uint8_t* data;
     pthread_mutex_lock(dm->bucket_locks + idx);
@@ -137,9 +138,18 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     lseek(fd, 0, SEEK_SET);
     for (uint16_t i = 0; i < dm->bucket_sizes[idx]; ++i) {
         e = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
+
+        /* if we've found a fragmented entry that will fit our new k/v pair */
+        if (e->vsz == 0 && e->ksz >= (keysz + valsz)) {
+            insertion_offset = off;
+            printf("found internal fragmented offset at %li\n", insertion_offset);
+        }
+
         // seek forward to read actual data
         off += sizeof(struct entry_hdr);
         /* if keysizes are !=, we don't need to compare keys */
+        // TODO:!!! when i'm iterating through the list, keep track of an empty section that can fit our new
+        // k/v pair!! this way we can fill deleted portions!
         if (e->ksz == keysz) {
             data = mmap(0, e->ksz + e->vsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
             if (!memcmp(data, key, keysz)) {
@@ -156,6 +166,8 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
                 /*memset(e, 0, sizeof(struct entry_hdr));*/
                 e->ksz += e->vsz;
                 e->vsz = 0;
+                // hmm, maybe i shouldn't decrement size because size still is taken up
+                --dm->bucket_sizes[idx];
                 break;
             }
         }
@@ -163,9 +175,13 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         off += e->ksz + e->vsz;
     }
 
+    ++dm->bucket_sizes[idx];
     /* this is reached if no duplicates are found OR a k/v pair now requires more space */
     /*TODO:need to truncate file to fit new entry*/
     /*if ()*/
+    /*first, we check if we have an insrtion_offset that will fit this. this will allow us to defragment a portion of our bucket*/
+    if (insertion_offset != -1) {
+    }
 
     cleanup:
     pthread_mutex_unlock(dm->bucket_locks + idx);
