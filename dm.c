@@ -161,27 +161,6 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     pthread_mutex_unlock(dm->bucket_locks + idx);
 }
 
-
-int o_main(){
-    void* ret;
-    int* val;
-    int fd = open("MM", O_CREAT | O_RDWR, S_IRWXU);
-    ftruncate(fd, sizeof(int));
-    ret = mmap(0, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (ret == MAP_FAILED) {
-        puts("failed");
-        perror("mmap");
-    }
-
-    val = ret;
-    *val = 0;
-    while (1) {
-        printf("%p: %i\n", ret, *val);
-        ++(*val);
-        usleep(1000);
-    }
-}
-
 int main() {
     struct diskmap dm;
     init_diskmap(&dm, 10, "TESTMAP", NULL);
