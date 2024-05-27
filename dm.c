@@ -22,6 +22,27 @@
  *
  *
  * upon insertion we hash the key, find the bucket file for that key
+ * insert(key, val):
+ *  idx = hash(key)
+ *  bucket = buckets[idx]
+ *
+ *  // check bucket for duplicates while ensuring thread/process safety
+ *  // keysize and valsize will speed this up in some cases
+ *  // TODO: do we have to lock on the whole bucket? can i just iterate over it?
+ *  // if keys never get removed we may not need to actually lock, 
+ *  we could block new insertion index assignments until nobody is checking for duplicates anymore
+ *  but this allows multiple identical insertions to have the same key actually
+ *  the only way is likely to "lock" for duplicate checks
+ *  we honestly also probably need to lock for full insertion. if we only get insertion idx assignments,
+ *  one thread could lock, find no duplicates, get an ins index, 
+ *  another thread could lock after, find no duplicates, get ins index,
+ *  then they could both insert their new identical key and corrupt the map
+ *  for this reason, we really do need to lock entire buckets from start to finish each insertion
+ *  this is a shame but we can just have a huge number of buckets to "solve" this problem
+ *
+ *  to avoid this limitation we could guarantee no overwrites, but this would not be a true hashmap
+ *  
+ *  for (int i = 0; i < 
  *
  *
 */
