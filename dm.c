@@ -71,6 +71,7 @@ struct diskmap{
     uint32_t n_buckets;
     char** bucket_fns;
     uint16_t* bucket_sizes;
+    uint16_t* bucket_caps;
     pthread_mutex_t* bucket_locks;
 };
 
@@ -86,6 +87,7 @@ void mmap_locks(struct diskmap* dm) {
     fd = open(lock_fn, O_CREAT | O_RDWR, S_IRWXU);
     target_sz = (sizeof(pthread_mutex_t) * dm->n_buckets);
     exists = lseek(fd, 0, SEEK_END) == target_sz;
+    lseek(fd, 0, SEEK_SET);
     if (!exists) {
         ftruncate(fd, target_sz);
     }
@@ -108,7 +110,8 @@ void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name, int (*
     /*dm->entries_in_mem = 19;*/
     dm->hash_func = hash_func;
     dm->n_buckets = n_buckets;
-    dm->bucket_sizes = malloc(sizeof(uint16_t) * dm->n_buckets);
+    dm->bucket_sizes = calloc(dm->n_buckets, sizeof(uint16_t));
+    dm->bucket_caps = calloc(dm->n_buckets, sizeof(uint16_t));
     dm->bucket_fns = malloc(sizeof(char*) * dm->n_buckets);
     for (uint32_t i = 0; i < dm->n_buckets; ++i) {
         dm->bucket_fns[i] = calloc(sizeof(dm->name) + 11, 1);
@@ -123,10 +126,15 @@ void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name, int (*
 void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* key, void* val) {
     int idx = dm->hash_func(key, keysz, dm->n_buckets);
     int fd = open(dm->bucket_fns[idx], O_CREAT | O_RDWR, S_IRWXU);
+    /* TODO: need to truncate file to correct size if file does not exist, maybe like 2x needed size */
     off_t off = 0;
     struct entry_hdr* e;
     uint8_t* data;
     pthread_mutex_lock(dm->bucket_locks + idx);
+    if (lseek(fd, 0, SEEK_END) == 0) {
+        ftruncate(fd, 5 * (keysz + valsz));
+    }
+    lseek(fd, 0, SEEK_SET);
     for (uint16_t i = 0; i < dm->bucket_sizes[idx]; ++i) {
         e = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
         // seek forward to read actual data
@@ -156,12 +164,23 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     }
 
     /* this is reached if no duplicates are found OR a k/v pair now requires more space */
+    /*TODO:need to truncate file to fit new entry*/
+    /*if ()*/
 
     cleanup:
     pthread_mutex_unlock(dm->bucket_locks + idx);
 }
 
+int hash(void* key, uint32_t keysz, uint32_t n_buckets) {
+    if (keysz < sizeof(int)) {
+        return 9;
+    }
+    return *((int*)key) & n_buckets;
+}
+
 int main() {
     struct diskmap dm;
-    init_diskmap(&dm, 10, "TESTMAP", NULL);
+    int val = 5;
+    init_diskmap(&dm, 10, "TESTMAP", hash);
+    insert_diskmap(&dm, 4, 4, &val, &val);
 }
