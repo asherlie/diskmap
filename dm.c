@@ -54,20 +54,28 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <string.h>
 
 struct diskmap{
+    char name[12];
     uint32_t n_buckets;
-    const char** bucket_fns;
+    char** bucket_fns;
     uint16_t* bucket_sizes;
     pthread_mutex_t* bucket_locks;
 };
 
 // creates an mmap()'d file or opens one if it exists
 // and updates dm->bucket_locks
-void mmap_locks(struct diskmap* dm, char* lock_fn) {
-    int fd = open(lock_fn, O_CREAT | O_RDWR, S_IRWXU);
-    int target_sz = (sizeof(pthread_mutex_t) * dm->n_buckets);
-    _Bool exists = lseek(fd, 0, SEEK_END) == target_sz;
+void mmap_locks(struct diskmap* dm) {
+    char lock_fn[20] = {0};
+    int fd;
+    int target_sz; 
+    _Bool exists;
+
+    snprintf(lock_fn, sizeof(lock_fn), "%s.LOCK", dm->name);
+    fd = open(lock_fn, O_CREAT | O_RDWR, S_IRWXU);
+    target_sz = (sizeof(pthread_mutex_t) * dm->n_buckets);
+    exists = lseek(fd, 0, SEEK_END) == target_sz;
     if (!exists) {
         ftruncate(fd, target_sz);
     }
@@ -78,13 +86,23 @@ void mmap_locks(struct diskmap* dm, char* lock_fn) {
         perror("mmap()");
     }
 
-    for (uint32_t i = 0; i < dm->n_buckets; ++i) {
-        /*pthread_mutex_init();*/
+    if (!exists) {
+        for (uint32_t i = 0; i < dm->n_buckets; ++i) {
+            pthread_mutex_init(dm->bucket_locks + i, NULL);
+        }
     }
 }
 
-void init_diskmap(struct diskmap* dm, uint32_t n_buckets) {
+void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name) {
+    strcpy(dm->name, map_name);
     dm->n_buckets = n_buckets;
+    dm->bucket_sizes = malloc(sizeof(uint16_t) * dm->n_buckets);
+    dm->bucket_fns = malloc(sizeof(char*) * dm->n_buckets);
+    for (uint32_t i = 0; i < dm->n_buckets; ++i) {
+        dm->bucket_fns[i] = calloc(sizeof(dm->name) + 11, 1);
+        snprintf(dm->bucket_fns[i], sizeof(dm->name) + 11, "%s_%u", dm->name, i);
+    }
+    mmap_locks(dm);
     /*dm->bucket_locks = malloc();*/
     /*for (int i = 0; i < n_buckets*/
     /*pthread_mutex_init();*/
