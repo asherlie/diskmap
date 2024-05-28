@@ -72,6 +72,7 @@ struct diskmap{
     char** bucket_fns;
     uint16_t* bucket_sizes;
     uint16_t* bucket_caps;
+    off_t* bytes_in_use, * bytes_cap;
     pthread_mutex_t* bucket_locks;
 };
 
@@ -110,8 +111,11 @@ void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name, int (*
     /*dm->entries_in_mem = 19;*/
     dm->hash_func = hash_func;
     dm->n_buckets = n_buckets;
+    /* TODO: consolidate these into a struct */
     dm->bucket_sizes = calloc(dm->n_buckets, sizeof(uint16_t));
     dm->bucket_caps = calloc(dm->n_buckets, sizeof(uint16_t));
+    dm->bytes_in_use = calloc(dm->n_buckets, sizeof(off_t));
+    dm->bytes_cap = calloc(dm->n_buckets, sizeof(off_t));
     dm->bucket_fns = malloc(sizeof(char*) * dm->n_buckets);
     for (uint32_t i = 0; i < dm->n_buckets; ++i) {
         dm->bucket_fns[i] = calloc(sizeof(dm->name) + 11, 1);
@@ -129,12 +133,15 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     /* TODO: need to truncate file to correct size if file does not exist, maybe like 2x needed size */
     off_t off = 0;
     off_t insertion_offset = -1;
+    // TODO: remove the dm->* that are just these, no need to record state?
+    off_t fsz;
     struct entry_hdr* e;
     uint8_t* data;
     pthread_mutex_lock(dm->bucket_locks + idx);
-    if (lseek(fd, 0, SEEK_END) == 0) {
+    if ((fsz = lseek(fd, 0, SEEK_END)) == 0) {
         ftruncate(fd, 5 * (keysz + valsz));
     }
+    dm->bytes_cap[idx] = fsz;
     lseek(fd, 0, SEEK_SET);
     for (uint16_t i = 0; i < dm->bucket_sizes[idx]; ++i) {
         e = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
@@ -151,6 +158,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         // TODO:!!! when i'm iterating through the list, keep track of an empty section that can fit our new
         // k/v pair!! this way we can fill deleted portions!
         if (e->ksz == keysz) {
+            // TODO: do i need to munmap() before i re-mmap()?
             data = mmap(0, e->ksz + e->vsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
             if (!memcmp(data, key, keysz)) {
                 /* overwrite entry and exit if new val fits in old val allocation
@@ -174,14 +182,18 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         // TODO: not sure if mmap increments filepos or if i need to use off
         off += e->ksz + e->vsz;
     }
+    dm->bytes_in_use[idx] = off;
 
     ++dm->bucket_sizes[idx];
     /* this is reached if no duplicates are found OR a k/v pair now requires more space */
     /*TODO:need to truncate file to fit new entry*/
     /*if ()*/
-    /*first, we check if we have an insrtion_offset that will fit this. this will allow us to defragment a portion of our bucket*/
+    /*first, we check if we have an insertion_offset that will fit this. this will allow us to defragment a portion of our bucket*/
+    /*if (fsz <)*/
+    /*okay, we can calculate bytes_in_use from the loop above. we shouldn't rely on any state anyway!*/
     if (insertion_offset != -1) {
     }
+    mmap(0, sizeof(struct entry_hdr) + keysz + valsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, );
 
     cleanup:
     pthread_mutex_unlock(dm->bucket_locks + idx);
