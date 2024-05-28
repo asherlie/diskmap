@@ -51,6 +51,7 @@
  *
 */
 #include <sys/mman.h>
+#include <sys/param.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <fcntl.h>
@@ -191,9 +192,15 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     /*first, we check if we have an insertion_offset that will fit this. this will allow us to defragment a portion of our bucket*/
     /*if (fsz <)*/
     /*okay, we can calculate bytes_in_use from the loop above. we shouldn't rely on any state anyway!*/
-    if (insertion_offset != -1) {
+    if (insertion_offset == -1 && (off + sizeof(struct entry_hdr) + keysz + valsz <= (uint64_t)fsz)) {
+        ftruncate(fd, MAX(fsz * 2, fsz + sizeof(struct entry_hdr) + keysz + valsz));
     }
-    mmap(0, sizeof(struct entry_hdr) + keysz + valsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, );
+    /*if (insertion_offset != -1) {*/
+    /*}*/
+    if (insertion_offset == -1) {
+        insertion_offset = off;
+    }
+    mmap(0, sizeof(struct entry_hdr) + keysz + valsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, insertion_offset);
 
     cleanup:
     pthread_mutex_unlock(dm->bucket_locks + idx);
