@@ -51,6 +51,7 @@
  *
 */
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/param.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -80,12 +81,12 @@ struct diskmap{
 // creates an mmap()'d file or opens one if it exists
 // and updates dm->bucket_locks
 void mmap_locks(struct diskmap* dm) {
-    char lock_fn[20] = {0};
+    char lock_fn[30] = {0};
     int fd;
     int target_sz; 
     _Bool exists;
 
-    snprintf(lock_fn, sizeof(lock_fn), "%s.LOCK", dm->name);
+    snprintf(lock_fn, sizeof(lock_fn), "%s/%s.LOCK", dm->name, dm->name);
     fd = open(lock_fn, O_CREAT | O_RDWR, S_IRWXU);
     target_sz = (sizeof(pthread_mutex_t) * dm->n_buckets);
     exists = lseek(fd, 0, SEEK_END) == target_sz;
@@ -109,6 +110,8 @@ void mmap_locks(struct diskmap* dm) {
 
 void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name, int (*hash_func)(void*, uint32_t, uint32_t)) {
     strcpy(dm->name, map_name);
+    /* TODO: fix perms */
+    mkdir(dm->name, 0777);
     /*dm->entries_in_mem = 19;*/
     dm->hash_func = hash_func;
     dm->n_buckets = n_buckets;
@@ -119,8 +122,8 @@ void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name, int (*
     dm->bytes_cap = calloc(dm->n_buckets, sizeof(off_t));
     dm->bucket_fns = malloc(sizeof(char*) * dm->n_buckets);
     for (uint32_t i = 0; i < dm->n_buckets; ++i) {
-        dm->bucket_fns[i] = calloc(sizeof(dm->name) + 11, 1);
-        snprintf(dm->bucket_fns[i], sizeof(dm->name) + 11, "%s_%u", dm->name, i);
+        dm->bucket_fns[i] = calloc(sizeof(dm->name)*2 + 31, 1);
+        snprintf(dm->bucket_fns[i], sizeof(dm->name)  + 31 + sizeof(dm->name), "%s/%s_%u", dm->name, dm->name, i);
     }
     mmap_locks(dm);
     /*dm->bucket_locks = malloc();*/
@@ -339,18 +342,16 @@ void remove_key_diskmap() {
 
 int hash(void* key, uint32_t keysz, uint32_t n_buckets) {
     if (keysz < sizeof(int)) {
-        return 9;
+        return 9 % n_buckets;
     }
     return *((int*)key) % n_buckets;
 }
 
 int main() {
     struct diskmap dm;
-    /*
-     * int val = 'z';
-     * int key = '9';
-    */
-    init_diskmap(&dm, 10, "TESTMAP", hash);
+    int val = 0;
+    int key = 0;
+    init_diskmap(&dm, 100, "TESTMAP", hash);
     /*insert_diskmap(&dm, 4, 4, &key, &val);*/
     insert_diskmap(&dm, 2, 5, "BA", "ASHER");
     // hmm, this should be showing up at the end but instead hexdump shows that it's directly overwriting ASHER
@@ -358,4 +359,12 @@ int main() {
 
     // this should take the space that "ASHER" previously took up
     insert_diskmap(&dm, 2, 4, "bs", "news");
+    insert_diskmap(&dm, 2, 4, "bs", "Kews");
+    insert_diskmap(&dm, 2, 4, "bs", "neKs");
+    insert_diskmap(&dm, 9, 5, "Eteridval", "asher");
+    
+    for (int i = 0; i < 100; ++i) {
+        ++key;
+        insert_diskmap(&dm, 4, 4, &key, &val);
+    }
 }
