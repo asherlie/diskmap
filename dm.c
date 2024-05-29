@@ -175,6 +175,8 @@ void* mmap_fine(int fd, off_t offset, uint32_t size, off_t* fine_off, size_t* ad
 void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* key, void* val) {
     int idx = dm->hash_func(key, keysz, dm->n_buckets);
     int fd = open(dm->bucket_fns[idx], O_CREAT | O_RDWR, S_IRWXU);
+    if (fd == -1)
+        perror("OPEN");
     /* TODO: need to truncate file to correct size if file does not exist, maybe like 2x needed size */
     off_t off = 0;
     off_t insertion_offset = -1;
@@ -232,7 +234,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         /* if we've found a fragmented entry that will fit our new k/v pair */
         if (e->vsz == 0 && e->ksz >= (keysz + valsz)) {
             insertion_offset = off;
-            printf("found internal fragmented offset at %li\n", insertion_offset);
+            /*printf("found internal fragmented offset at %li\n", insertion_offset);*/
         }
 
         // seek forward to read actual data
@@ -248,14 +250,14 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
             /*ah, diff valsz makes this wrong instantly. with diff valsz, we need to fragment*/
             /*nvm already handled*/
 
-            printf("found identical keysz of %i\n", keysz);
+            /*printf("found identical keysz of %i\n", keysz);*/
             if (!memcmp(data + adtnl_offset + sizeof(struct entry_hdr), key, keysz)) {
-                printf("found identical KEY of %s!\n", (char*)key);
+                /*printf("found identical KEY of %s!\n", (char*)key);*/
                 /* overwrite entry and exit if new val fits in old val allocation
                  * otherwise, we have to fragment the bucket and erase this whole entry
                  */
                 if (valsz <= e->vsz) {
-                    puts("found a region to fit new val");
+                    /*puts("found a region to fit new val");*/
                     memcpy(data + sizeof(struct entry_hdr) + adtnl_offset + keysz, val, valsz);
                     munmap(data, munmap_sz);
                     goto cleanup;
@@ -266,7 +268,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
                 /*memset(e, 0, sizeof(struct entry_hdr));*/
                 e->ksz += e->vsz;
                 e->vsz = 0;
-                printf("marked region at off %li for overwriting due to lack of space for new value\n", off);
+                /*printf("marked region at off %li for overwriting due to lack of space for new value\n", off);*/
                 // hmm, maybe i shouldn't decrement size because size still is taken up
                 --dm->bucket_sizes[idx];
                 // TODO: make this more elegant, no reason to have two separate incrementations of off
@@ -279,7 +281,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         }
         // TODO: not sure if mmap increments filepos or if i need to use off
         off += sizeof(struct entry_hdr) + e->ksz + e->vsz;
-        puts("incremented off");
+        /*puts("incremented off");*/
         munmap(data, munmap_sz);
     }
     dm->bytes_in_use[idx] = off;
@@ -292,7 +294,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     /*if (fsz <)*/
     /*okay, we can calculate bytes_in_use from the loop above. we shouldn't rely on any state anyway!*/
     if (insertion_offset == -1 && (off + sizeof(struct entry_hdr) + keysz + valsz >= (uint64_t)fsz)) {
-        puts("growing file...");
+        /*puts("growing file...");*/
         ftruncate(fd, MAX(fsz * 2, fsz + sizeof(struct entry_hdr) + keysz + valsz));
     }
     /*if (insertion_offset != -1) {*/
@@ -326,13 +328,14 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     e = (struct entry_hdr*)(data + adtnl_offset);
     e->vsz = valsz;
     e->ksz = keysz;
-    printf("writing new entry to offset %li\n", insertion_offset);
+    /*printf("writing new entry to offset %li\n", insertion_offset);*/
     memcpy((data + adtnl_offset + sizeof(struct entry_hdr)), key, keysz);
     memcpy((data + adtnl_offset + sizeof(struct entry_hdr) + keysz), val, valsz);
     munmap(data, munmap_sz);
 
 
     cleanup:
+    close(fd);
     pthread_mutex_unlock(dm->bucket_locks + idx);
 }
 
@@ -351,7 +354,7 @@ int main() {
     struct diskmap dm;
     int val = 0;
     int key = 0;
-    init_diskmap(&dm, 100, "TESTMAP", hash);
+    init_diskmap(&dm, 10000, "TESTMAP", hash);
     /*insert_diskmap(&dm, 4, 4, &key, &val);*/
     insert_diskmap(&dm, 2, 5, "BA", "ASHER");
     // hmm, this should be showing up at the end but instead hexdump shows that it's directly overwriting ASHER
@@ -363,8 +366,9 @@ int main() {
     insert_diskmap(&dm, 2, 4, "bs", "neKs");
     insert_diskmap(&dm, 9, 5, "Eteridval", "asher");
     
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < 21100; ++i) {
         ++key;
         insert_diskmap(&dm, 4, 4, &key, &val);
+        /*usleep(100);*/
     }
 }
