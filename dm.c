@@ -134,6 +134,30 @@ void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name, int (*
  * }
 */
 
+/* this allows you to access portions of an mmap()d region between pages. if a new page is needed
+ * this function will mmap() it
+ */
+/*
+ * void* mmap_fine(int fd, off_t offset, uint32_t size, uint8_t* cur_page, uint32_t cur_page_idx, void* write, uint32_t write_sz) {
+ *     long pgsz = sysconf(_SC_PAGE_SIZE);
+ *     off_t adj_offset = offset / pgsz;
+ *     return mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset);
+ * }
+*/
+
+void* mmap_fine(int fd, off_t offset, uint32_t size, off_t* fine_off, size_t* adj_sz) {
+    long pgsz = sysconf(_SC_PAGE_SIZE);
+    uint32_t pgno = offset / pgsz;
+    /* increase size by the amount of extra bytes we're reading due to aligning with a page */
+    off_t adj_offset = pgno * pgsz;
+    *adj_sz = size + (offset % pgsz);
+    *fine_off = offset % pgsz;
+    printf("%li size %u -> pageno %u, adj_offset: %li\n", offset, size, pgno, pgno * pgsz);
+    printf("reading %li bytes from offset %lu. a user offset of %li must be used\n", *adj_sz, adj_offset, *fine_off);
+
+    return mmap(0, *adj_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, adj_offset);
+}
+
 // TODO: all mmap() calls must use an offset divisible by page size ...
 // this complicates things because if the bucket is smaller than a page, we might as well just load it all into memory
 // we need to pick which page to load - we'll get page size and find which page we need to find the offset of
@@ -150,11 +174,12 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     off_t off = 0;
     off_t insertion_offset = -1;
     // TODO: remove the dm->* that are just these, no need to record state?
-    off_t fsz;
+    off_t fsz, adtnl_offset;
+    size_t munmap_sz;
     struct entry_hdr* e;
-    uint8_t* data;
+    uint8_t* data, * page;
     long pgsz = sysconf(_SC_PAGE_SIZE);
-    uint32_t pages_needed;
+    uint32_t pages_needed, pg_idx = 0;
 
 /*
  * dupe checking:
@@ -178,6 +203,9 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
  * and then add offset % pagesize as our new offset
  * (4096*2 + 3) % 4096 == 3, so just divide for the page number
  * use modulus to get offset in page
+ *
+ * ugh, it may just be easier to grab as many pages as we need at a given time
+ * this will let us avoid messing with page boundaries
  * 
 */
 
@@ -191,6 +219,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     for (uint16_t i = 0; i < dm->bucket_sizes[idx]; ++i) {
         // TODO: all mmap() calls must use an offset divisible by page size ...
         e = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
+        page = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, pgsz * pg_idx);
 
         /* if we've found a fragmented entry that will fit our new k/v pair */
         if (e->vsz == 0 && e->ksz >= (keysz + valsz)) {
@@ -247,19 +276,34 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         insertion_offset = off;
     }
     // TODO: all mmap() calls must use an offset divisible by page size ...
-    e = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, insertion_offset);
-    e->vsz = valsz;
-    e->ksz = keysz;
-    insertion_offset += sizeof(struct entry_hdr);
-    munmap(e, sizeof(struct entry_hdr));
-    /*lseek(fd, 0, SEEK_SET);*/
-    // hmm, seems that insertion_offset makes this fail. this is probably somethign weird with fseek
-    // TODO: all mmap() calls must use an offset divisible by page size ...
-    data = mmap(0, keysz + valsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, insertion_offset);
-    printf("mmap(0, %u, PROT_READ | PROT_WRITE, MAP_SHARED, %i, %li) == %p\n", keysz + valsz, fd, insertion_offset, data);
-    perror("mm");
-    memcpy(data, key, keysz);
-    memcpy(data+keysz, val, valsz);
+    /*e = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, insertion_offset);*/
+
+
+
+    /*
+     * e = mmap_fine(fd, insertion_offset, sizeof(struct entry_hdr), &adtnl_offset);
+     * (e+adtnl_offset)->vsz = valsz;
+     * (e+adtnl_offset)->ksz = keysz;
+     * insertion_offset += sizeof(struct entry_hdr);
+     * munmap(e, sizeof(struct entry_hdr));
+     * [>lseek(fd, 0, SEEK_SET);<]
+     * // hmm, seems that insertion_offset makes this fail. this is probably somethign weird with fseek
+     * // TODO: all mmap() calls must use an offset divisible by page size ...
+     * data = mmap(0, keysz + valsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, insertion_offset);
+     * mmap_fine(fd, insertion_offset, keysz + valsz, &adtnl_offset);
+     * printf("mmap(0, %u, PROT_READ | PROT_WRITE, MAP_SHARED, %i, %li) == %p\n", keysz + valsz, fd, insertion_offset, data);
+     * perror("mm");
+     * memcpy(data, key, keysz);
+     * memcpy(data+keysz, val, valsz);
+    */
+
+    data = mmap_fine(fd, insertion_offset, sizeof(struct entry_hdr) + keysz + valsz, &adtnl_offset, &munmap_sz);
+    ((struct entry_hdr*)data + adtnl_offset)->vsz = valsz;
+    ((struct entry_hdr*)data + adtnl_offset)->ksz = keysz;
+    memcpy((data + adtnl_offset + sizeof(struct entry_hdr)), key, keysz);
+    memcpy((data + adtnl_offset + sizeof(struct entry_hdr) + keysz), val, valsz);
+    munmap(data, munmap_sz);
+
 
     cleanup:
     pthread_mutex_unlock(dm->bucket_locks + idx);
@@ -269,12 +313,12 @@ int hash(void* key, uint32_t keysz, uint32_t n_buckets) {
     if (keysz < sizeof(int)) {
         return 9;
     }
-    return *((int*)key) & n_buckets;
+    return *((int*)key) % n_buckets;
 }
 
 int main() {
     struct diskmap dm;
-    int val = 45;
+    int val = 'Z';
     init_diskmap(&dm, 10, "TESTMAP", hash);
     insert_diskmap(&dm, 4, 4, &val, &val);
 }
