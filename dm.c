@@ -61,22 +61,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct entry_hdr{
-    uint32_t ksz, vsz;
-};
+#include "dm.h"
 
-struct diskmap{
-    char name[12];
-    // hash_func(key, keysz, n_buckets)
-    /*int entries_in_mem;*/
-    int (*hash_func)(void*, uint32_t, uint32_t);
-    uint32_t n_buckets;
-    char** bucket_fns;
-    uint16_t* bucket_sizes;
-    uint16_t* bucket_caps;
-    off_t* bytes_in_use, * bytes_cap;
-    pthread_mutex_t* bucket_locks;
-};
 
 // creates an mmap()'d file or opens one if it exists
 // and updates dm->bucket_locks
@@ -223,7 +209,10 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     }
     dm->bytes_cap[idx] = fsz;
     lseek(fd, 0, SEEK_SET);
-    for (uint16_t i = 0; i < dm->bucket_sizes[idx]; ++i) {
+    /*bucket sizes should not be used*/
+    /*for (uint16_t i = 0; i < dm->bucket_sizes[idx]; ++i) {*/
+    while (off < fsz) {
+        /*printf("%li <= %li\n", off, fsz);*/
         // TODO: all mmap() calls must use an offset divisible by page size ...
         /*e = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);*/
         data = mmap_fine(fd, off, sizeof(struct entry_hdr) + keysz + valsz, &adtnl_offset, &munmap_sz);
@@ -343,32 +332,29 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
 void remove_key_diskmap() {
 }
 
-int hash(void* key, uint32_t keysz, uint32_t n_buckets) {
-    if (keysz < sizeof(int)) {
-        return 9 % n_buckets;
+void* lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz) {
+    int idx = dm->hash_func(key, keysz, dm->n_buckets);
+    int fd = open(dm->bucket_fns[idx], O_RDONLY, S_IRWXU);
+    void* ret;
+    off_t fsz, adtnl_offset;
+    off_t off = 0;
+    pthread_mutex_lock(dm->bucket_locks + idx);
+    if ((fsz = lseek(fd, 0, SEEK_END)) == 0) {
+        ftruncate(fd, 5 * (keysz + valsz));
+        fsz = 5 * (keysz + valsz);
     }
-    return *((int*)key) % n_buckets;
-}
+    lseek(fd, 0, SEEK_SET);
 
-int main() {
-    struct diskmap dm;
-    int val = 0;
-    int key = 0;
-    init_diskmap(&dm, 10000, "TESTMAP", hash);
-    /*insert_diskmap(&dm, 4, 4, &key, &val);*/
-    insert_diskmap(&dm, 2, 5, "BA", "ASHER");
-    // hmm, this should be showing up at the end but instead hexdump shows that it's directly overwriting ASHER
-    insert_diskmap(&dm, 2, 10, "BA", "**********");
-
-    // this should take the space that "ASHER" previously took up
-    insert_diskmap(&dm, 2, 4, "bs", "news");
-    insert_diskmap(&dm, 2, 4, "bs", "Kews");
-    insert_diskmap(&dm, 2, 4, "bs", "neKs");
-    insert_diskmap(&dm, 9, 5, "Eteridval", "asher");
-    
-    for (int i = 0; i < 21100; ++i) {
-        ++key;
-        insert_diskmap(&dm, 4, 4, &key, &val);
-        /*usleep(100);*/
+    if (fsz <= 0) {
+        ret = NULL;
+        *valsz = 0;
+        goto cleanup;
     }
+
+    while (off < fsz) {
+        off += 1;
+    }
+
+    cleanup:
+    pthread_mutex_unlock(dm->bucket_locks + idx);
 }
