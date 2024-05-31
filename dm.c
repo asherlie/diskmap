@@ -167,10 +167,11 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     off_t off = 0;
     off_t insertion_offset = -1;
     // TODO: remove the dm->* that are just these, no need to record state?
-    off_t fsz, adtnl_offset;
-    size_t munmap_sz;
+    off_t fsz, adtnl_offset[2];
+    size_t munmap_sz[2];
     struct entry_hdr* e;
-    uint8_t* data;
+    uint8_t* data[2];
+    _Bool first = 0;
     /*long pgsz = sysconf(_SC_PAGE_SIZE);*/
     /*uint32_t pages_needed, pg_idx = 0;*/
 
@@ -206,23 +207,38 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     if ((fsz = lseek(fd, 0, SEEK_END)) == 0) {
         ftruncate(fd, 5 * (keysz + valsz));
         fsz = 5 * (keysz + valsz);
+        first = 1;
     }
     dm->bytes_cap[idx] = fsz;
     lseek(fd, 0, SEEK_SET);
     /*bucket sizes should not be used*/
     /*for (uint16_t i = 0; i < dm->bucket_sizes[idx]; ++i) {*/
-    while (off < fsz) {
+    // TODO something is up here, we're adding zeroed padding to the beginning of the file
+    // TODO: clean this all up, we shouldn't be individually munmap()ing
+    while (!first && off < fsz) {
         /*printf("%li <= %li\n", off, fsz);*/
         // TODO: all mmap() calls must use an offset divisible by page size ...
         /*e = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);*/
-        data = mmap_fine(fd, off, sizeof(struct entry_hdr) + keysz + valsz, &adtnl_offset, &munmap_sz);
-        e = (struct entry_hdr*)(data + adtnl_offset);
+        /*UGH. i need to separately mmap() for keysz, valsz because we need keysz/valsz for each individual entry*/
+        /*printf("reading from offset %li\n", off);*/
+        /*printf("adtnl offset: %li\n", adtnl_offset[0]);*/
+        data[0] = mmap_fine(fd, off, sizeof(struct entry_hdr), adtnl_offset, munmap_sz);
+        /*printf("adtnl offset: %li\n", adtnl_offset[0]);*/
+        e = (struct entry_hdr*)(data[0] + adtnl_offset[0]);
+        /*off += sizeof(struct entry_hdr);*/
+        data[1] = mmap_fine(fd, off + sizeof(struct entry_hdr), e->ksz + e->vsz, adtnl_offset+1, munmap_sz+1);
+        /*printf("data[0] == %p, data[1] == %p\n", data[0], data[1]);*/
+        /*printf("e->ksz: %u, e->vsz: %u\n", e->ksz, e->vsz);*/
+        /*e = (struct entry_hdr*)(data + adtnl_offset);*/
 
         /*page = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, pgsz * pg_idx);*/
 
         /* if we've found a fragmented entry that will fit our new k/v pair */
         if (e->vsz == 0 && e->ksz >= (keysz + valsz)) {
             insertion_offset = off;
+            munmap(data[0], munmap_sz[0]);
+            munmap(data[1], munmap_sz[1]);
+            break;
             /*printf("found internal fragmented offset at %li\n", insertion_offset);*/
         }
 
@@ -240,15 +256,16 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
             /*nvm already handled*/
 
             /*printf("found identical keysz of %i\n", keysz);*/
-            if (!memcmp(data + adtnl_offset + sizeof(struct entry_hdr), key, keysz)) {
+            if (!memcmp(data[1] + adtnl_offset[1], key, keysz)) {
                 /*printf("found identical KEY of %s!\n", (char*)key);*/
                 /* overwrite entry and exit if new val fits in old val allocation
                  * otherwise, we have to fragment the bucket and erase this whole entry
                  */
                 if (valsz <= e->vsz) {
                     /*puts("found a region to fit new val");*/
-                    memcpy(data + sizeof(struct entry_hdr) + adtnl_offset + keysz, val, valsz);
-                    munmap(data, munmap_sz);
+                    memcpy(data[1] + adtnl_offset[1] + keysz, val, valsz);
+                    munmap(data[0], munmap_sz[0]);
+                    munmap(data[1], munmap_sz[1]);
                     goto cleanup;
                 }
                 // how do i mark this section as invalid without removing info about where next entry begins?
@@ -261,7 +278,10 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
                 // hmm, maybe i shouldn't decrement size because size still is taken up
                 --dm->bucket_sizes[idx];
                 // TODO: make this more elegant, no reason to have two separate incrementations of off
-                off += sizeof(struct entry_hdr) + e->ksz + e->vsz;
+                /*maybe remove this... we're incrementing twice sometimes!*/
+                /*off += sizeof(struct entry_hdr) + e->ksz + e->vsz;*/
+                /*munmap(data[0], munmap_sz[0]);*/
+                /*munmap(data[1], munmap_sz[1]);*/
                 break;
                 // instead of breaking, we can just ensure that this is the last iteration and continue
                 // this way we don't have to explicitly increment off again
@@ -269,9 +289,12 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
             }
         }
         // TODO: not sure if mmap increments filepos or if i need to use off
+        // problem is here, e->ksz is impossibly large! 4160495616
+        // we're either reading from the wrong spot or ftruncate() doesn't zero the extended region
         off += sizeof(struct entry_hdr) + e->ksz + e->vsz;
         /*puts("incremented off");*/
-        munmap(data, munmap_sz);
+        munmap(data[0], munmap_sz[0]);
+        munmap(data[1], munmap_sz[1]);
     }
     dm->bytes_in_use[idx] = off;
 
@@ -313,14 +336,15 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
      * memcpy(data+keysz, val, valsz);
     */
 
-    data = mmap_fine(fd, insertion_offset, sizeof(struct entry_hdr) + keysz + valsz, &adtnl_offset, &munmap_sz);
-    e = (struct entry_hdr*)(data + adtnl_offset);
+    /*printf("setting k/v sz: %i %i %i %i\n", e->vsz, e->ksz, valsz, keysz);*/
+    data[0] = mmap_fine(fd, insertion_offset, sizeof(struct entry_hdr) + keysz + valsz, adtnl_offset, munmap_sz);
+    e = (struct entry_hdr*)(data[0] + adtnl_offset[0]);
     e->vsz = valsz;
     e->ksz = keysz;
     /*printf("writing new entry to offset %li\n", insertion_offset);*/
-    memcpy((data + adtnl_offset + sizeof(struct entry_hdr)), key, keysz);
-    memcpy((data + adtnl_offset + sizeof(struct entry_hdr) + keysz), val, valsz);
-    munmap(data, munmap_sz);
+    memcpy((data[0] + adtnl_offset[0] + sizeof(struct entry_hdr)), key, keysz);
+    memcpy((data[0] + adtnl_offset[0] + sizeof(struct entry_hdr) + keysz), val, valsz);
+    munmap(data[0], munmap_sz[0]);
 
 
     cleanup:
@@ -332,29 +356,60 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
 void remove_key_diskmap() {
 }
 
-void* lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz) {
+_Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val) {
     int idx = dm->hash_func(key, keysz, dm->n_buckets);
-    int fd = open(dm->bucket_fns[idx], O_RDONLY, S_IRWXU);
-    void* ret;
+    /*int fd = open(dm->bucket_fns[idx], O_RDONLY);*/
+    int fd = open(dm->bucket_fns[idx], O_RDWR);
+    _Bool ret = 0;
     off_t fsz, adtnl_offset;
+    size_t munmap_sz[2];
     off_t off = 0;
+    struct entry_hdr* e;
+    uint8_t* data[2];
     pthread_mutex_lock(dm->bucket_locks + idx);
-    if ((fsz = lseek(fd, 0, SEEK_END)) == 0) {
-        ftruncate(fd, 5 * (keysz + valsz));
-        fsz = 5 * (keysz + valsz);
-    }
-    lseek(fd, 0, SEEK_SET);
-
-    if (fsz <= 0) {
+    if ((fsz = lseek(fd, 0, SEEK_END)) <= 0) {
         ret = NULL;
         *valsz = 0;
         goto cleanup;
     }
+    lseek(fd, 0, SEEK_SET);
 
+    int iter = 0;
     while (off < fsz) {
-        off += 1;
+        printf("iteration %i - off %li, fsz %li\n", iter++, off, fsz);
+        data[0] = mmap_fine(fd, off, sizeof(struct entry_hdr), &adtnl_offset, munmap_sz);
+        e = (struct entry_hdr*)(data[0] + adtnl_offset);
+        if (!(e->ksz || e->vsz)) {
+            // why are we finding NIL entries in the beginning? look into insert
+            printf("found NIL entry, exiting\n");
+            munmap(data[0], munmap_sz[0]);
+            goto cleanup;
+        }
+        /*perror("mm");*/
+        off += sizeof(struct entry_hdr);
+        /* e->* == 0, hmm */
+        if (e->vsz == 0 || e->ksz != keysz) {
+            printf("found bad ksz or deleted field, incrementing off by %i\n", e->ksz + e->vsz);
+            off += e->ksz + e->vsz;
+            munmap(data[0], munmap_sz[0]);
+            continue;
+        }
+        data[1] = mmap_fine(fd, off, e->ksz + e->vsz, &adtnl_offset, munmap_sz+1);
+        /*something's off with our incrementation of off*/
+        if (memcmp(data[1] + adtnl_offset, key, keysz)) {
+            off += e->ksz + e->vsz;
+            munmap(data[0], munmap_sz[0]);
+            munmap(data[1], munmap_sz[1]);
+            continue;
+        }
+
+        *valsz = e->vsz;
+        memcpy(val, data[1] + adtnl_offset + keysz, *valsz);
+        ret = 1;
+        break;
     }
 
     cleanup:
     pthread_mutex_unlock(dm->bucket_locks + idx);
+    return ret;
 }
