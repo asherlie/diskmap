@@ -63,6 +63,13 @@
 
 #include "dm.h"
 
+struct page_tracker{
+    uint32_t n_pages;
+    /*int offset_range;*/
+    uint32_t byte_offset_start, n_bytes;
+
+    uint8_t* mapped;
+};
 
 // creates an mmap()'d file or opens one if it exists
 // and updates dm->bucket_locks

@@ -6,14 +6,6 @@ struct entry_hdr{
     uint32_t ksz, vsz;
 };
 
-struct page_tracker{
-    uint32_t n_pages;
-    /*int offset_range;*/
-    uint32_t byte_offset_start, n_bytes;
-
-    uint8_t* mapped;
-};
-
 struct diskmap{
     char name[12];
     // hash_func(key, keysz, n_buckets)
