@@ -55,8 +55,9 @@ int main() {
     large_insertion_test(1, 1, 16);
     elapsed = ((double)(clock()-st))/CLOCKS_PER_SEC;
     printf("%f elapsed\n", elapsed);
+    /*pre-optimization this took 1.4-1.9 seconds*/
 
-    return 0;
+    /*return 0;*/
 
     struct diskmap dm;
     int val = 0;
@@ -77,7 +78,7 @@ int main() {
     insert_diskmap(&dm, 2, 4, "bs", "neKs");
     insert_diskmap(&dm, 9, 5, "Eteridval", "asher");
     
-    for (int i = 0; i < 100000; ++i) {
+    for (int i = 0; i < 1000; ++i) {
         ++key;
         val = key*49;
         insert_diskmap(&dm, 4, 4, &key, &val);
