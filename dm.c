@@ -189,7 +189,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     /*uint8_t* data[2];*/
     uint8_t* data;
     _Bool first = 0;
-    struct page_tracker pt = {.n_pages = 1, .byte_offset_start = 0, .n_bytes = 0};
+    struct page_tracker pt = {.n_pages = 9, .byte_offset_start = 0, .n_bytes = 0};
     /*long pgsz = sysconf(_SC_PAGE_SIZE);*/
     /*uint32_t pages_needed, pg_idx = 0;*/
 

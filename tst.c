@@ -78,7 +78,7 @@ int main() {
     insert_diskmap(&dm, 2, 4, "bs", "neKs");
     insert_diskmap(&dm, 9, 5, "Eteridval", "asher");
     
-    for (int i = 0; i < 1000; ++i) {
+    for (int i = 0; i < 100000; ++i) {
         ++key;
         val = key*49;
         insert_diskmap(&dm, 4, 4, &key, &val);
