@@ -94,7 +94,7 @@ void mmap_locks(struct diskmap* dm) {
     }
 }
 
-void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name, int (*hash_func)(void*, uint32_t, uint32_t)) {
+void init_diskmap(struct diskmap* dm, uint32_t n_pages, uint32_t n_buckets, char* map_name, int (*hash_func)(void*, uint32_t, uint32_t)) {
     strcpy(dm->name, map_name);
     /* TODO: fix perms */
     mkdir(dm->name, 0777);
@@ -107,20 +107,17 @@ void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name, int (*
     dm->bytes_in_use = calloc(dm->n_buckets, sizeof(off_t));
     dm->bytes_cap = calloc(dm->n_buckets, sizeof(off_t));
     dm->bucket_fns = malloc(sizeof(char*) * dm->n_buckets);
+    dm->pages_in_memory = n_pages;
+    /*
+     * memset(&dm->pt, 0, sizeof(struct page_tracker));
+     * dm->pt.n_pages = n_pages;
+    */
     for (uint32_t i = 0; i < dm->n_buckets; ++i) {
         dm->bucket_fns[i] = calloc(sizeof(dm->name)*2 + 31, 1);
         snprintf(dm->bucket_fns[i], sizeof(dm->name)  + 31 + sizeof(dm->name), "%s/%s_%u", dm->name, dm->name, i);
     }
     mmap_locks(dm);
 }
-
-struct page_tracker{
-    int n_pages;
-    /*int offset_range;*/
-    int byte_offset_start, n_bytes;
-
-    uint8_t* mapped;
-};
 
 void* mmap_fine(int fd, off_t offset, uint32_t size, off_t* fine_off, size_t* adj_sz) {
     long pgsz = sysconf(_SC_PAGE_SIZE);
@@ -149,10 +146,12 @@ void* mmap_fine_optimized(struct page_tracker* pt, int fd, off_t offset, uint32_
     // starting page
     uint32_t pgno = offset / pgsz;
 
-    if (pt->n_bytes && offset >= pt->byte_offset_start && offset + size <= pt->byte_offset_start + pt->n_bytes) {
-        return pt->mapped + offset - pt->byte_offset_start;
+    if (pt->n_bytes) {
+        if (offset >= pt->byte_offset_start && offset + size <= pt->byte_offset_start + pt->n_bytes) {
+            return pt->mapped + offset - pt->byte_offset_start;
+        }
+        munmap(pt->mapped, pt->n_bytes);
     }
-    munmap(pt->mapped, pt->n_bytes);
 
     pt->byte_offset_start = pgno * pgsz;
     // mmap()ing size bytes if our data spans more pages than is "allowed"
@@ -189,7 +188,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     /*uint8_t* data[2];*/
     uint8_t* data;
     _Bool first = 0;
-    struct page_tracker pt = {.n_pages = 9, .byte_offset_start = 0, .n_bytes = 0};
+    struct page_tracker pt = {.n_pages = dm->pages_in_memory, .byte_offset_start = 0, .n_bytes = 0};
     /*long pgsz = sysconf(_SC_PAGE_SIZE);*/
     /*uint32_t pages_needed, pg_idx = 0;*/
 
@@ -388,11 +387,11 @@ _Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* va
     /*int fd = open(dm->bucket_fns[idx], O_RDONLY);*/
     int fd = open(dm->bucket_fns[idx], O_RDWR);
     _Bool ret = 0;
-    off_t fsz, adtnl_offset;
-    size_t munmap_sz[2];
+    off_t fsz;
     off_t off = 0;
     struct entry_hdr* e;
-    uint8_t* data[2];
+    uint8_t* data;
+    struct page_tracker pt = {.n_pages = dm->pages_in_memory, .byte_offset_start = 0, .n_bytes = 0};
     pthread_mutex_lock(dm->bucket_locks + idx);
     if ((fsz = lseek(fd, 0, SEEK_END)) <= 0) {
         ret = NULL;
@@ -404,12 +403,11 @@ _Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* va
     int iter = 0;
     while (off < fsz) {
         printf("iteration %i - off %li, fsz %li\n", iter++, off, fsz);
-        data[0] = mmap_fine(fd, off, sizeof(struct entry_hdr), &adtnl_offset, munmap_sz);
-        e = (struct entry_hdr*)(data[0] + adtnl_offset);
+        e = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr));
         if (!(e->ksz || e->vsz)) {
             // why are we finding NIL entries in the beginning? look into insert
             printf("found NIL entry, exiting\n");
-            munmap(data[0], munmap_sz[0]);
+            /*munmap(data[0], munmap_sz[0]);*/
             goto cleanup;
         }
         /*perror("mm");*/
@@ -418,25 +416,26 @@ _Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* va
         if (e->vsz == 0 || e->ksz != keysz) {
             printf("found bad ksz or deleted field, incrementing off by %i\n", e->ksz + e->vsz);
             off += e->ksz + e->vsz;
-            munmap(data[0], munmap_sz[0]);
+            /*munmap(data[0], munmap_sz[0]);*/
             continue;
         }
-        data[1] = mmap_fine(fd, off, e->ksz + e->vsz, &adtnl_offset, munmap_sz+1);
+        data = mmap_fine_optimized(&pt, fd, off, e->ksz + e->vsz);
         /*something's off with our incrementation of off*/
-        if (memcmp(data[1] + adtnl_offset, key, keysz)) {
+        if (memcmp(data, key, keysz)) {
             off += e->ksz + e->vsz;
-            munmap(data[0], munmap_sz[0]);
-            munmap(data[1], munmap_sz[1]);
+            /*munmap(data[0], munmap_sz[0]);*/
+            /*munmap(data[1], munmap_sz[1]);*/
             continue;
         }
 
         *valsz = e->vsz;
-        memcpy(val, data[1] + adtnl_offset + keysz, *valsz);
+        memcpy(val, data + keysz, *valsz);
         ret = 1;
         break;
     }
 
     cleanup:
+    munmap_fine(&pt);
     pthread_mutex_unlock(dm->bucket_locks + idx);
     return ret;
 }
