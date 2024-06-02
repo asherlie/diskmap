@@ -112,27 +112,8 @@ void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name, int (*
         snprintf(dm->bucket_fns[i], sizeof(dm->name)  + 31 + sizeof(dm->name), "%s/%s_%u", dm->name, dm->name, i);
     }
     mmap_locks(dm);
-    /*dm->bucket_locks = malloc();*/
-    /*for (int i = 0; i < n_buckets*/
-    /*pthread_mutex_init();*/
 }
 
-/*
- * void* mmap_fine(int fd, off_t offset) {
- *     return fd + offset;
- * }
-*/
-
-/* this allows you to access portions of an mmap()d region between pages. if a new page is needed
- * this function will mmap() it
- */
-/*
- * void* mmap_fine(int fd, off_t offset, uint32_t size, uint8_t* cur_page, uint32_t cur_page_idx, void* write, uint32_t write_sz) {
- *     long pgsz = sysconf(_SC_PAGE_SIZE);
- *     off_t adj_offset = offset / pgsz;
- *     return mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset);
- * }
-*/
 
 void* mmap_fine(int fd, off_t offset, uint32_t size, off_t* fine_off, size_t* adj_sz) {
     long pgsz = sysconf(_SC_PAGE_SIZE);
@@ -158,6 +139,7 @@ void* mmap_fine(int fd, off_t offset, uint32_t size, off_t* fine_off, size_t* ad
 // UGHHH, i should just do this from the outset. this is the only function where mmap()s have offsets anyway
 // just keep track of offset like i am, but mmap() a page at a time UNLESS i need more than one page
 // for a large keysz + valsz, hmm
+/*insertions get veeeeery slow when we have to check for duplicates*/
 void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* key, void* val) {
     int idx = dm->hash_func(key, keysz, dm->n_buckets);
     int fd = open(dm->bucket_fns[idx], O_CREAT | O_RDWR, S_IRWXU);
