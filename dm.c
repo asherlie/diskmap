@@ -114,6 +114,13 @@ void init_diskmap(struct diskmap* dm, uint32_t n_buckets, char* map_name, int (*
     mmap_locks(dm);
 }
 
+struct page_tracker{
+    int n_pages;
+    /*int offset_range;*/
+    int byte_offset_start, n_bytes;
+
+    uint8_t* mapped;
+};
 
 void* mmap_fine(int fd, off_t offset, uint32_t size, off_t* fine_off, size_t* adj_sz) {
     long pgsz = sysconf(_SC_PAGE_SIZE);
@@ -129,6 +136,22 @@ void* mmap_fine(int fd, off_t offset, uint32_t size, off_t* fine_off, size_t* ad
 
     return mmap(0, *adj_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, adj_offset);
 }
+
+// TODO: this breaks when the number of pages that include (offset + size) > pt->n_pages
+// AH! in this case, we can just return mmap_fine()!
+void* mmap_fine_optimized(struct page_tracker* pt, int fd, off_t offset, uint32_t size, off_t* fine_off, size_t* adj_sz) {
+    long pgsz = sysconf(_SC_PAGE_SIZE);
+    // starting page
+    uint32_t pgno = offset / pgsz;
+    off_t adj_offset = pgno * pgsz;
+
+    pt->byte_offset_start = pgno * pgsz;
+    pt->n_bytes = pgsz * pt->n_pages;
+
+    pt->mapped = mmap(0, *adj_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, adj_offset);
+    return pt->mapped + (offset - pt->byte_offset_start);
+}
+
 
 // TODO: all mmap() calls must use an offset divisible by page size ...
 // this complicates things because if the bucket is smaller than a page, we might as well just load it all into memory
@@ -154,6 +177,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     struct entry_hdr* e;
     uint8_t* data[2];
     _Bool first = 0;
+    struct page_tracker pt = {.n_pages = 1, .byte_offset_start = 0, .n_bytes = 0};
     /*long pgsz = sysconf(_SC_PAGE_SIZE);*/
     /*uint32_t pages_needed, pg_idx = 0;*/
 
@@ -204,11 +228,12 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         /*UGH. i need to separately mmap() for keysz, valsz because we need keysz/valsz for each individual entry*/
         /*printf("reading from offset %li\n", off);*/
         /*printf("adtnl offset: %li\n", adtnl_offset[0]);*/
-        data[0] = mmap_fine(fd, off, sizeof(struct entry_hdr), adtnl_offset, munmap_sz);
+        // TODO: get rid of munmap()s, these will be handled by *_optimized()
+        data[0] = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr), adtnl_offset, munmap_sz);
         /*printf("adtnl offset: %li\n", adtnl_offset[0]);*/
         e = (struct entry_hdr*)(data[0] + adtnl_offset[0]);
         /*off += sizeof(struct entry_hdr);*/
-        data[1] = mmap_fine(fd, off + sizeof(struct entry_hdr), e->ksz + e->vsz, adtnl_offset+1, munmap_sz+1);
+        data[1] = mmap_fine_optimized(&pt, fd, off + sizeof(struct entry_hdr), e->ksz + e->vsz, adtnl_offset+1, munmap_sz+1);
         /*printf("data[0] == %p, data[1] == %p\n", data[0], data[1]);*/
         /*printf("e->ksz: %u, e->vsz: %u\n", e->ksz, e->vsz);*/
         /*e = (struct entry_hdr*)(data + adtnl_offset);*/
@@ -319,7 +344,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     */
 
     /*printf("setting k/v sz: %i %i %i %i\n", e->vsz, e->ksz, valsz, keysz);*/
-    data[0] = mmap_fine(fd, insertion_offset, sizeof(struct entry_hdr) + keysz + valsz, adtnl_offset, munmap_sz);
+    data[0] = mmap_fine_optimized(&pt, fd, insertion_offset, sizeof(struct entry_hdr) + keysz + valsz, adtnl_offset, munmap_sz);
     e = (struct entry_hdr*)(data[0] + adtnl_offset[0]);
     e->vsz = valsz;
     e->ksz = keysz;
