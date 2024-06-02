@@ -34,7 +34,7 @@ void large_insertion_test(int n_buckets, int n_threads, int ins_per_thread) {
     pthread_t pth[n_threads];
     struct ins_arg* ia;
     struct diskmap dm;
-    init_diskmap(&dm, n_buckets, "LIT", hash);
+    init_diskmap(&dm, 10, n_buckets, "LIT", hash);
 
     for (int i = 0; i < n_threads; ++i) {
         ia = malloc(sizeof(struct ins_arg));
@@ -64,7 +64,7 @@ int main() {
     int key = 0;
     uint32_t valsz;
     char valstr[30] = {0};
-    init_diskmap(&dm, 10000, "x", hash);
+    init_diskmap(&dm, 10, 10000, "x", hash);
     /*insert_diskmap(&dm, 4, 4, &key, &val);*/
     insert_diskmap(&dm, 2, 5, "BA", "ASHER");
     // hmm, this should be showing up at the end but instead hexdump shows that it's directly overwriting ASHER
