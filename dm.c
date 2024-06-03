@@ -249,7 +249,9 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         // TODO: get rid of munmap()s, these will be handled by *_optimized()
 
         /*data[0] = mmap_fine(fd, off, sizeof(struct entry_hdr), adtnl_offset, munmap_sz);*/
-        e = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr));
+        /*adding an educated guess for ksz/vsz so we hopefully don't need to re-mmap() for second mmap_fine_optimized() call*/
+        data = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + keysz + valsz);
+        e = (struct entry_hdr*)data;
 
         /*printf("adtnl offset: %li\n", adtnl_offset[0]);*/
         /*e = (struct entry_hdr*)(data[0] + adtnl_offset[0]);*/
@@ -257,7 +259,16 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
 
         /*data[1] = mmap_fine(fd, off + sizeof(struct entry_hdr), e->ksz + e->vsz, adtnl_offset+1, munmap_sz+1);*/
         // TODO: move this after the next check
-        data = mmap_fine_optimized(&pt, fd, off + sizeof(struct entry_hdr), e->ksz + e->vsz);
+
+        /*
+         * oof, this is bad. can't have multiple calls to *_optimized() and expect both to be mmap()d
+         * there's a chance e may be munmap()d by this call
+        */
+
+        // we need to re-mmap() in case e->ksz + e->vsz != keysz + valsz
+        data = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + e->ksz + e->vsz);
+        e = (struct entry_hdr*)data;
+        data += sizeof(struct entry_hdr);
 
         /*printf("data[0] == %p, data[1] == %p\n", data[0], data[1]);*/
         /*printf("e->ksz: %u, e->vsz: %u\n", e->ksz, e->vsz);*/
@@ -295,6 +306,8 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
                  */
                 if (valsz <= e->vsz) {
                     /*puts("found a region to fit new val");*/
+                    // this makes insertion offset wild
+                    e->vsz = valsz;
                     memcpy(data + keysz, val, valsz);
                     /*munmap(data[0], munmap_sz[0]);*/
                     /*munmap(data[1], munmap_sz[1]);*/
@@ -369,6 +382,8 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     */
 
     /*printf("setting k/v sz: %i %i %i %i\n", e->vsz, e->ksz, valsz, keysz);*/
+    /*uhh, insertion offset is absolutely insane*/
+    printf("ins offset: %li\n", insertion_offset);
     data = mmap_fine_optimized(&pt, fd, insertion_offset, sizeof(struct entry_hdr) + keysz + valsz);
     e = (struct entry_hdr*)data;
     e->vsz = valsz;
