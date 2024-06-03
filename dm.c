@@ -385,11 +385,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     pthread_mutex_unlock(dm->bucket_locks + idx);
 }
 
-/* remove_key_diskmap() sets e->vsz to 0, marking the region as reclaimable */
-void remove_key_diskmap() {
-}
-
-_Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val) {
+_Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val, _Bool delete) {
     int idx = dm->hash_func(key, keysz, dm->n_buckets);
     /*int fd = open(dm->bucket_fns[idx], O_RDONLY);*/
     int fd = open(dm->bucket_fns[idx], O_RDWR);
@@ -435,9 +431,16 @@ _Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* va
             continue;
         }
 
-        *valsz = e->vsz;
-        memcpy(val, data + keysz, *valsz);
         ret = 1;
+        *valsz = e->vsz;
+
+        if (delete) {
+            e->ksz += e->vsz;
+            e->vsz = 0;
+            break;
+        }
+
+        memcpy(val, data + keysz, *valsz);
         break;
     }
 
@@ -445,4 +448,14 @@ _Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* va
     munmap_fine(&pt);
     pthread_mutex_unlock(dm->bucket_locks + idx);
     return ret;
+}
+
+_Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val) {
+    return lookup_diskmap_internal(dm, keysz, key, valsz, val, 0);
+}
+
+/* remove_key_diskmap() sets e->vsz to 0, marking the region as reclaimable */
+_Bool remove_key_diskmap(struct diskmap* dm, uint32_t keysz, void* key) {
+    uint32_t valsz;
+    return lookup_diskmap_internal(dm, keysz, key, &valsz, NULL, 1);
 }
