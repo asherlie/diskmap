@@ -52,7 +52,7 @@ int main() {
     clock_t st;
     double elapsed;
     st = clock();
-    large_insertion_test(1, 1, 16);
+    large_insertion_test(1500, 2, 90);
     elapsed = ((double)(clock()-st))/CLOCKS_PER_SEC;
     printf("%f elapsed\n", elapsed);
     /*pre-optimization this took 1.4-1.9 seconds*/
@@ -78,20 +78,27 @@ int main() {
     insert_diskmap(&dm, 2, 4, "bs", "neKs");
     insert_diskmap(&dm, 9, 5, "Eteridval", "asher");
     
-    for (int i = 0; i < 100000; ++i) {
+    // we should never insert from only one thread
+    for (int i = 0; i < 1000; ++i) {
         ++key;
         val = key*49;
         insert_diskmap(&dm, 4, 4, &key, &val);
         /*usleep(100);*/
     }
-
     key = 59;
+    val = 2891;
+    /*remove_key_diskmap(&dm, 4, &key);*/
+    /*insert_diskmap(&dm, 4, 4, &key, &val);*/
+
     printf("lookup(): %i\n", lookup_diskmap(&dm, 4, &key, &valsz, &val));
     printf("lookup val: %i\n", val);
 
     printf("lookup(): %i\n", lookup_diskmap(&dm, 2, "BA", &valsz, valstr));
     printf("valsz: %i\n", valsz);
     printf("lookup val: %s\n", valstr);
+
+    /*TODO: further test remove_key_diskmap()*/
+    /*remove_key_diskmap(&dm, 2, "BA");*/
 
     insert_diskmap(&dm, 0, 0, NULL, NULL);
 }
