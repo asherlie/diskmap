@@ -3,7 +3,12 @@
 #include <pthread.h>
 
 struct entry_hdr{
-    uint32_t ksz, vsz;
+    /* cap is necessary to keep track of the amount of bytes taken up by an entry
+     * this may shift over time as smaller entries are used to de-fragment larger ones
+     * that have room
+     * cap stores the largest ksz + vsz
+     */
+    uint32_t ksz, vsz, cap;
 };
 
 struct diskmap{
@@ -13,9 +18,6 @@ struct diskmap{
     int (*hash_func)(void*, uint32_t, uint32_t);
     uint32_t n_buckets;
     char** bucket_fns;
-    uint16_t* bucket_sizes;
-    uint16_t* bucket_caps;
-    off_t* bytes_in_use, * bytes_cap;
     pthread_mutex_t* bucket_locks;
 
     /*
