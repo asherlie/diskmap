@@ -49,16 +49,21 @@ void large_insertion_test(int n_buckets, int n_threads, int ins_per_thread) {
 }
 
 int main() {
+    #if 1
     clock_t st;
     double elapsed;
     st = clock();
-    large_insertion_test(1500, 2, 90);
+    // this crashes with a very large number of insertions and < 10000 bucket entries
+    // why?
+    // 13 crashes, 12 stable
+    large_insertion_test(1, 1, 13);
     elapsed = ((double)(clock()-st))/CLOCKS_PER_SEC;
     printf("%f elapsed\n", elapsed);
     /*pre-optimization this took 1.4-1.9 seconds*/
+    return 0;
+    #endif
 
-    /*return 0;*/
-
+    /*#endif*/
     struct diskmap dm;
     int val = 0;
     int key = 0;
@@ -66,9 +71,9 @@ int main() {
     char valstr[30] = {0};
     init_diskmap(&dm, 10, 10000, "x", hash);
     /*insert_diskmap(&dm, 4, 4, &key, &val);*/
-    insert_diskmap(&dm, 2, 5, "BA", "ASHER");
+    /*insert_diskmap(&dm, 2, 5, "BA", "ASHER");*/
     // hmm, this should be showing up at the end but instead hexdump shows that it's directly overwriting ASHER
-    insert_diskmap(&dm, 2, 10, "BA", "**********");
+    /*insert_diskmap(&dm, 2, 10, "BA", "**********");*/
     insert_diskmap(&dm, 2, 10, "BA", "****@*$***");
     insert_diskmap(&dm, 2, 2, "BA", "_ ");
 
@@ -79,26 +84,27 @@ int main() {
     insert_diskmap(&dm, 9, 5, "Eteridval", "asher");
     
     // we should never insert from only one thread
-    for (int i = 0; i < 1000; ++i) {
+    for (int i = 0; i < 9000; ++i) {
         ++key;
         val = key*49;
         insert_diskmap(&dm, 4, 4, &key, &val);
         /*usleep(100);*/
     }
+    /*return 1;*/
     key = 59;
     val = 2891;
     /*remove_key_diskmap(&dm, 4, &key);*/
     /*insert_diskmap(&dm, 4, 4, &key, &val);*/
 
-    printf("lookup(): %i\n", lookup_diskmap(&dm, 4, &key, &valsz, &val));
-    printf("lookup val: %i\n", val);
+    /*printf("lookup(): %i\n", lookup_diskmap(&dm, 4, &key, &valsz, &val));*/
+    /*printf("lookup val: %i\n", val);*/
 
     printf("lookup(): %i\n", lookup_diskmap(&dm, 2, "BA", &valsz, valstr));
-    printf("valsz: %i\n", valsz);
+    /*printf("valsz: %i\n", valsz);*/
+    /*valstr[valsz] = 0;*/
     printf("lookup val: %s\n", valstr);
 
     /*TODO: further test remove_key_diskmap()*/
     /*remove_key_diskmap(&dm, 2, "BA");*/
 
-    insert_diskmap(&dm, 0, 0, NULL, NULL);
 }

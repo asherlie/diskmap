@@ -250,6 +250,14 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
          * actually maybe not...
          * but maybe we're requesting too much memory
         */
+        // there's a chance that this is beyond our file, when does this happen?
+        // we need to ftruncate() the file, i found the cause of the crash
+        // TODO: why are we reading an invalid number of bytes? when would this happen?
+        // TODO: we must be doing some weird arithmetic somewhere
+        // we shouldn't need to grow our file while iterating through it
+        // TODO: maypbe it's a problem with off +=
+        // nvm, i think it could just be because we're doing such a rough estimate above! obviously it's not a perfectly formed
+        // file!! we need to just exit once we've reached a point where there can be no more valid entries!
         data = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + keysz + valsz);
         e = (struct entry_hdr*)data;
 
@@ -267,9 +275,14 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
 
         // we need to re-mmap() in case e->ksz + e->vsz != keysz + valsz
         /*wow! this is the crash now*/
-        data = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + e->ksz + e->vsz);
+        /*data = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + e->ksz + e->vsz);*/
+        // e->cap must be mmap()d in case we defragment below
+        // // crash is here
+        // crash is here
+        data = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + e->cap);
         e = (struct entry_hdr*)data;
         data += sizeof(struct entry_hdr);
+        /*ftruncate(fd, fsz = (fsz * 2));*/
 
         /*printf("data[0] == %p, data[1] == %p\n", data[0], data[1]);*/
         /*printf("e->ksz: %u, e->vsz: %u\n", e->ksz, e->vsz);*/
