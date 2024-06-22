@@ -13,8 +13,6 @@ struct entry_hdr{
 
 struct diskmap{
     char name[12];
-    // hash_func(key, keysz, n_buckets)
-    /*int entries_in_mem;*/
     int (*hash_func)(void*, uint32_t, uint32_t);
     uint32_t n_buckets;
     char** bucket_fns;
@@ -43,7 +41,6 @@ struct diskmap{
      * useless
     */
     uint32_t pages_in_memory;
-    //struct page_tracker* page_trackers;
 };
 
 void init_diskmap(struct diskmap* dm, uint32_t n_pages, uint32_t n_buckets, char* map_name, int (*hash_func)(void*, uint32_t, uint32_t));

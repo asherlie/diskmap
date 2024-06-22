@@ -124,99 +124,20 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         first = 1;
     }
     lseek(fd, 0, SEEK_SET);
-    /*bucket sizes should not be used*/
-    /*for (uint16_t i = 0; i < dm->bucket_sizes[idx]; ++i) {*/
-    // TODO something is up here, we're adding zeroed padding to the beginning of the file
-    // TODO: clean this all up, we shouldn't be individually munmap()ing
-    /*while (!first && off < fsz) {*/
-    // TODO: there could still be a circumstance where this fails - if we have enough room for header but not
-    // fields
-    // need to add a check below as wll
-    /*while (!first && (fsz - off) > (long)sizeof(struct entry_hdr)) {*/
     while (!first && off < fsz) {
-        /*printf("%li <= %li\n", off, fsz);*/
-        // TODO: all mmap() calls must use an offset divisible by page size ...
-        /*e = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);*/
-        /*UGH. i need to separately mmap() for keysz, valsz because we need keysz/valsz for each individual entry*/
-        /*printf("reading from offset %li\n", off);*/
-        /*printf("adtnl offset: %li\n", adtnl_offset[0]);*/
-        // TODO: get rid of munmap()s, these will be handled by *_optimized()
-
-        /*data[0] = mmap_fine(fd, off, sizeof(struct entry_hdr), adtnl_offset, munmap_sz);*/
-        /*adding an educated guess for ksz/vsz so we hopefully don't need to re-mmap() for second mmap_fine_optimized() call*/
-        /*
-         * i honestly bet that our educated guess stuff is causing the seg fault
-         * actually maybe not...
-         * but maybe we're requesting too much memory
-        */
-        // there's a chance that this is beyond our file, when does this happen?
-        // we need to ftruncate() the file, i found the cause of the crash
-        // TODO: why are we reading an invalid number of bytes? when would this happen?
-        // TODO: we must be doing some weird arithmetic somewhere
-        // we shouldn't need to grow our file while iterating through it
-        // TODO: maypbe it's a problem with off +=
-        // nvm, i think it could just be because we're doing such a rough estimate above! obviously it's not a perfectly formed
-        // file!! we need to just exit once we've reached a point where there can be no more valid entries!
-        // look also into how we're ftruncating, 
-        //
-        // hmmm, it would be convenient to store something like final_offset, which would be the offset
-        // of the final entry
-        // could store this in entry, just one byte for y/n final entry
-        // OR could just be a little smarter about the while condition
-        //
-        //
-        // okay, so we're going along and keep finding empty entries, this is NP. we += off each time
-        // in our last iteration, we will have set off to a value where entry_hdr + ... is unavailable
         data = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + keysz + valsz);
         e = (struct entry_hdr*)data;
-
-        /*printf("adtnl offset: %li\n", adtnl_offset[0]);*/
-        /*e = (struct entry_hdr*)(data[0] + adtnl_offset[0]);*/
-        /*off += sizeof(struct entry_hdr);*/
-
-        /*data[1] = mmap_fine(fd, off + sizeof(struct entry_hdr), e->ksz + e->vsz, adtnl_offset+1, munmap_sz+1);*/
-        // TODO: move this after the next check
-
-        /*
-         * oof, this is bad. can't have multiple calls to *_optimized() and expect both to be mmap()d
-         * there's a chance e may be munmap()d by this call
-        */
-
-        // we need to re-mmap() in case e->ksz + e->vsz != keysz + valsz
-        /*wow! this is the crash now*/
-        /*data = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + e->ksz + e->vsz);*/
-        // e->cap must be mmap()d in case we defragment below
-        // // crash is here
-        // crash is here
-        // TODO: is this necessary? I believe it is - we can't have a more elegant check for this because
-        // we don't know e->cap in while condition
-        /*printf("%li < %i + %li\n", fsz, e->ksz, off);*/
-        // if e->cap == 0 || e->vsz == 0 then this is uncharted territory - an empty ftruncate()d region
         if (e->cap + e->ksz + e->vsz == 0) {
-            /*this seems too good to be true, this is being triggered early on it seems*/
-            /*puts("SAVING SOME CYCLES, exiting early :)");*/
             break;
-            /*goto cleanup;*/
         }
         data = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + e->cap);
         e = (struct entry_hdr*)data;
         data += sizeof(struct entry_hdr);
-        /*ftruncate(fd, fsz = (fsz * 2));*/
-
-        /*printf("data[0] == %p, data[1] == %p\n", data[0], data[1]);*/
-        /*printf("e->ksz: %u, e->vsz: %u\n", e->ksz, e->vsz);*/
-        /*e = (struct entry_hdr*)(data + adtnl_offset);*/
-
-        /*page = mmap(0, sizeof(struct entry_hdr), PROT_READ | PROT_WRITE, MAP_SHARED, fd, pgsz * pg_idx);*/
 
         /* if we've found a fragmented entry that will fit our new k/v pair */
-        /*if (e->vsz == 0 && e->ksz >= (keysz + valsz)) {*/
         if (e->vsz == 0 && e->cap >= (keysz + valsz)) {
             insertion_offset = off;
-            /*munmap(data[0], munmap_sz[0]);*/
-            /*munmap(data[1], munmap_sz[1]);*/
             break;
-            /*printf("found internal fragmented offset at %li\n", insertion_offset);*/
         }
 
         // seek forward to read actual data
