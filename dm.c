@@ -150,10 +150,10 @@ void* mmap_fine_optimized(struct page_tracker* pt, int fd, off_t offset, uint32_
     // starting page
     uint32_t pgno = offset / pgsz;
 
-    printf("got a request for offset %li -> %lu\n", offset, offset + size);
+    /*printf("got a request for offset %li -> %lu\n", offset, offset + size);*/
     if (pt->n_bytes) {
         if (offset >= pt->byte_offset_start && offset + size <= pt->byte_offset_start + pt->n_bytes) {
-            printf("this is contained within %i -> %i, we're good.\n", pt->byte_offset_start, pt->byte_offset_start + pt->n_bytes);
+            /*printf("this is contained within %i -> %i, we're good.\n", pt->byte_offset_start, pt->byte_offset_start + pt->n_bytes);*/
             return pt->mapped + offset - pt->byte_offset_start;
         }
         munmap(pt->mapped, pt->n_bytes);
@@ -168,9 +168,7 @@ void* mmap_fine_optimized(struct page_tracker* pt, int fd, off_t offset, uint32_
 
     pt->mapped = mmap(0, pt->n_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, pt->byte_offset_start);
     /*printf("re-MMAP required. %i -> %i\n", pt->byte_offset_start, pt->byte_offset_start + pt->n_bytes);*/
-    if (offset + size > pt->byte_offset_start + pt->n_bytes) {
-        /*puts("UHOH, bug triggered");*/
-    }
+    assert(!(offset + size > pt->byte_offset_start + pt->n_bytes));
     /*
      * found the problem, as suspected, it's about boundary offsets i believe
      * sometimes more than n_pages is required
@@ -376,7 +374,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
                     
                     /*e->vsz -= 5;*/
                     
-                    printf("e->vsz %i -> %i, cap remains: %i\n", e->vsz, valsz, e->cap);
+                    /*printf("e->vsz %i -> %i, cap remains: %i\n", e->vsz, valsz, e->cap);*/
                     e->vsz = valsz;
                     memcpy(data + keysz, val, valsz);
                     /*munmap(data[0], munmap_sz[0]);*/
@@ -512,7 +510,7 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
         e = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + (keysz * 2));
         if (!(e->ksz || e->vsz)) {
             // why are we finding NIL entries in the beginning? look into insert
-            printf("found NIL entry, exiting\n");
+            /*printf("found NIL entry, exiting\n");*/
             /*munmap(data[0], munmap_sz[0]);*/
             goto cleanup;
         }
@@ -521,7 +519,7 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
         off += sizeof(struct entry_hdr);
         /* e->* == 0, hmm */
         if (e->vsz == 0 || e->ksz != keysz) {
-            printf("found bad ksz or deleted field, incrementing off by %i OR %i\n", e->ksz + e->vsz, e->cap);
+            /*printf("found bad ksz or deleted field, incrementing off by %i OR %i\n", e->ksz + e->vsz, e->cap);*/
             off += e->cap;
             /*munmap(data[0], munmap_sz[0]);*/
             continue;
@@ -550,6 +548,7 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     }
 
     cleanup:
+    close(fd);
     munmap_fine(&pt);
     pthread_mutex_unlock(dm->bucket_locks + idx);
     return ret;
