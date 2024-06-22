@@ -186,12 +186,11 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     munmap_fine(&pt);
     close(fd);
     pthread_mutex_unlock(dm->bucket_locks + idx);
-
-    /*printf("exiting call with size (%i,%i)\n", keysz, valsz);*/
 }
 
 _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val, _Bool delete) {
     int idx = dm->hash_func(key, keysz, dm->n_buckets);
+    /* TODO why doesn't O_RDONLY work for lookups */ 
     /*int fd = open(dm->bucket_fns[idx], O_RDONLY);*/
     int fd = open(dm->bucket_fns[idx], O_RDWR);
     _Bool ret = 0;
@@ -208,33 +207,20 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     }
     lseek(fd, 0, SEEK_SET);
 
-    /*int iter = 0;*/
     while (off < fsz) {
-        /*printf("iteration %i - off %li, fsz %li\n", iter++, off, fsz);*/
         e = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + (keysz * 2));
         if (!(e->ksz || e->vsz)) {
-            // why are we finding NIL entries in the beginning? look into insert
-            /*printf("found NIL entry, exiting\n");*/
-            /*munmap(data[0], munmap_sz[0]);*/
             goto cleanup;
         }
-        /*perror("mm");*/
-        // USE NEW FIELD HERE
         off += sizeof(struct entry_hdr);
-        /* e->* == 0, hmm */
         if (e->vsz == 0 || e->ksz != keysz) {
-            /*printf("found bad ksz or deleted field, incrementing off by %i OR %i\n", e->ksz + e->vsz, e->cap);*/
             off += e->cap;
-            /*munmap(data[0], munmap_sz[0]);*/
             continue;
         }
         /* we don't need to mmap() e->cap here, only grab relevant bytes */
         data = mmap_fine_optimized(&pt, fd, off, e->ksz + e->vsz);
-        /*something's off with our incrementation of off*/
         if (memcmp(data, key, keysz)) {
             off += e->cap;
-            /*munmap(data[0], munmap_sz[0]);*/
-            /*munmap(data[1], munmap_sz[1]);*/
             continue;
         }
 
