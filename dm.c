@@ -77,12 +77,9 @@ void munmap_fine(struct page_tracker* pt) {
     munmap(pt->mapped, pt->n_bytes);
 }
 
-// TODO: this breaks when the number of pages that include (offset + size) > pt->n_pages
-// AH! in this case, we can just return mmap_fine()!
-// nvm... we can just add to n_bytes!!! we don't have to mmap() an exact number of pages
 void* mmap_fine_optimized(struct page_tracker* pt, int fd, off_t offset, uint32_t size) {
     long pgsz = sysconf(_SC_PAGE_SIZE);
-    // starting page
+    /* calculate starting page */
     uint32_t pgno = offset / pgsz;
 
     /*printf("got a request for offset %li -> %lu\n", offset, offset + size);*/
@@ -95,7 +92,6 @@ void* mmap_fine_optimized(struct page_tracker* pt, int fd, off_t offset, uint32_
     }
 
     pt->byte_offset_start = pgno * pgsz;
-    // mmap()ing size bytes if our data spans more pages than is "allowed"
     /*printf("nbytes = MAX(%li, %li)\n", pgsz * pt->n_pages, size + offset - pt->byte_offset_start);*/
     /* we may need to mmap() more than pt->n_pages if our data is between page boundaries */
     pt->n_bytes = MAX(pgsz * pt->n_pages, size + offset - pt->byte_offset_start);
@@ -104,70 +100,22 @@ void* mmap_fine_optimized(struct page_tracker* pt, int fd, off_t offset, uint32_
     pt->mapped = mmap(0, pt->n_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, pt->byte_offset_start);
     /*printf("re-MMAP required. %i -> %i\n", pt->byte_offset_start, pt->byte_offset_start + pt->n_bytes);*/
     assert(!(offset + size > pt->byte_offset_start + pt->n_bytes));
-    /*
-     * found the problem, as suspected, it's about boundary offsets i believe
-     * sometimes more than n_pages is required
-    */
     return pt->mapped + (offset - pt->byte_offset_start);
 }
 
 
-// TODO: all mmap() calls must use an offset divisible by page size ...
-// this complicates things because if the bucket is smaller than a page, we might as well just load it all into memory
-// we need to pick which page to load - we'll get page size and find which page we need to find the offset of
-// for now i'll write an abstracted function to just get the right page, mmap to that offset, return that pointer + fine tuned
-// offset. this is slower than just handling this all from insert_diskmap() because we could just grab a page
-// at a time and only mmap a new page once we need to
-// UGHHH, i should just do this from the outset. this is the only function where mmap()s have offsets anyway
-// just keep track of offset like i am, but mmap() a page at a time UNLESS i need more than one page
-// for a large keysz + valsz, hmm
-/*insertions get veeeeery slow when we have to check for duplicates*/
 void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* key, void* val) {
     int idx = dm->hash_func(key, keysz, dm->n_buckets);
     int fd = open(dm->bucket_fns[idx], O_CREAT | O_RDWR, S_IRWXU);
     if (fd == -1)
         perror("OPEN");
-    /* TODO: need to truncate file to correct size if file does not exist, maybe like 2x needed size */
     off_t off = 0;
     off_t insertion_offset = -1;
-    // TODO: remove the dm->* that are just these, no need to record state?
     off_t fsz;
-    /*size_t munmap_sz[2];*/
     struct entry_hdr* e;
-    /*uint8_t* data[2];*/
     uint8_t* data;
     _Bool first = 0;
     struct page_tracker pt = {.n_pages = dm->pages_in_memory, .byte_offset_start = 0, .n_bytes = 0};
-    /*long pgsz = sysconf(_SC_PAGE_SIZE);*/
-    /*uint32_t pages_needed, pg_idx = 0;*/
-
-/*
- * dupe checking:
- *     grab page
- *     iterate over the buffer looking at ksz and key comparisons
- *     each iteration, check if we're at the end of our page and if we need to grab a new one
- *     we will still record offsets in the same manner, but will have to be more careful when navigating to this offset
- *     NOTE: an entry_hdr or kv pair may be on a page boundary, in this case i'll have to be careful
- * 
- * insertion:
- *     grow file if needed
- *     if a new page is needed, grab it
- *     use offset + page number to find where to insert
- *     write ksz, vsz, k, v to offset
- * 
- * commit before implementing this!
- * i'll probably need to add 
- * int current_page
- * 
- * offsets will be global offsets from 0, so we'll calculate pages with that in mind
- * and then add offset % pagesize as our new offset
- * (4096*2 + 3) % 4096 == 3, so just divide for the page number
- * use modulus to get offset in page
- *
- * ugh, it may just be easier to grab as many pages as we need at a given time
- * this will let us avoid messing with page boundaries
- * 
-*/
 
     pthread_mutex_lock(dm->bucket_locks + idx);
     if ((fsz = lseek(fd, 0, SEEK_END)) == 0) {
