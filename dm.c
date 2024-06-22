@@ -161,11 +161,16 @@ void* mmap_fine_optimized(struct page_tracker* pt, int fd, off_t offset, uint32_
 
     pt->byte_offset_start = pgno * pgsz;
     // mmap()ing size bytes if our data spans more pages than is "allowed"
-    pt->n_bytes = MAX(pgsz * pt->n_pages, size);
+    /*printf("nbytes = MAX(%li, %li)\n", pgsz * pt->n_pages, size + offset - pt->byte_offset_start);*/
+    /* we may need to mmap() more than pt->n_pages if our data is between page boundaries */
+    pt->n_bytes = MAX(pgsz * pt->n_pages, size + offset - pt->byte_offset_start);
 
 
     pt->mapped = mmap(0, pt->n_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, pt->byte_offset_start);
-    printf("re-MMAP required. %i -> %i\n", pt->byte_offset_start, pt->byte_offset_start + pt->n_bytes);
+    /*printf("re-MMAP required. %i -> %i\n", pt->byte_offset_start, pt->byte_offset_start + pt->n_bytes);*/
+    if (offset + size > pt->byte_offset_start + pt->n_bytes) {
+        /*puts("UHOH, bug triggered");*/
+    }
     /*
      * found the problem, as suspected, it's about boundary offsets i believe
      * sometimes more than n_pages is required
