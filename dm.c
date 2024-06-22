@@ -60,6 +60,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 
 #include "dm.h"
 
@@ -149,8 +150,10 @@ void* mmap_fine_optimized(struct page_tracker* pt, int fd, off_t offset, uint32_
     // starting page
     uint32_t pgno = offset / pgsz;
 
+    printf("got a request for offset %li -> %lu\n", offset, offset + size);
     if (pt->n_bytes) {
         if (offset >= pt->byte_offset_start && offset + size <= pt->byte_offset_start + pt->n_bytes) {
+            printf("this is contained within %i -> %i, we're good.\n", pt->byte_offset_start, pt->byte_offset_start + pt->n_bytes);
             return pt->mapped + offset - pt->byte_offset_start;
         }
         munmap(pt->mapped, pt->n_bytes);
@@ -162,6 +165,11 @@ void* mmap_fine_optimized(struct page_tracker* pt, int fd, off_t offset, uint32_
 
 
     pt->mapped = mmap(0, pt->n_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, pt->byte_offset_start);
+    printf("re-MMAP required. %i -> %i\n", pt->byte_offset_start, pt->byte_offset_start + pt->n_bytes);
+    /*
+     * found the problem, as suspected, it's about boundary offsets i believe
+     * sometimes more than n_pages is required
+    */
     return pt->mapped + (offset - pt->byte_offset_start);
 }
 
@@ -234,6 +242,11 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     /*for (uint16_t i = 0; i < dm->bucket_sizes[idx]; ++i) {*/
     // TODO something is up here, we're adding zeroed padding to the beginning of the file
     // TODO: clean this all up, we shouldn't be individually munmap()ing
+    /*while (!first && off < fsz) {*/
+    // TODO: there could still be a circumstance where this fails - if we have enough room for header but not
+    // fields
+    // need to add a check below as wll
+    /*while (!first && (fsz - off) > (long)sizeof(struct entry_hdr)) {*/
     while (!first && off < fsz) {
         /*printf("%li <= %li\n", off, fsz);*/
         // TODO: all mmap() calls must use an offset divisible by page size ...
@@ -258,6 +271,16 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         // TODO: maypbe it's a problem with off +=
         // nvm, i think it could just be because we're doing such a rough estimate above! obviously it's not a perfectly formed
         // file!! we need to just exit once we've reached a point where there can be no more valid entries!
+        // look also into how we're ftruncating, 
+        //
+        // hmmm, it would be convenient to store something like final_offset, which would be the offset
+        // of the final entry
+        // could store this in entry, just one byte for y/n final entry
+        // OR could just be a little smarter about the while condition
+        //
+        //
+        // okay, so we're going along and keep finding empty entries, this is NP. we += off each time
+        // in our last iteration, we will have set off to a value where entry_hdr + ... is unavailable
         data = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + keysz + valsz);
         e = (struct entry_hdr*)data;
 
@@ -279,6 +302,16 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         // e->cap must be mmap()d in case we defragment below
         // // crash is here
         // crash is here
+        // TODO: is this necessary? I believe it is - we can't have a more elegant check for this because
+        // we don't know e->cap in while condition
+        /*printf("%li < %i + %li\n", fsz, e->ksz, off);*/
+        // if e->cap == 0 || e->vsz == 0 then this is uncharted territory - an empty ftruncate()d region
+        if (e->cap + e->ksz + e->vsz == 0) {
+            /*this seems too good to be true, this is being triggered early on it seems*/
+            /*puts("SAVING SOME CYCLES, exiting early :)");*/
+            break;
+            /*goto cleanup;*/
+        }
         data = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + e->cap);
         e = (struct entry_hdr*)data;
         data += sizeof(struct entry_hdr);
@@ -393,9 +426,9 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     }
 
     if (insertion_offset + sizeof(struct entry_hdr) + keysz + valsz >= (uint64_t)fsz) {
-        printf("resize needed: %li\n", fsz);
+        /*printf("resize needed: %li\n", fsz);*/
         ftruncate(fd, (fsz = MAX(fsz * 2, fsz + sizeof(struct entry_hdr) + keysz + valsz)));
-        printf("resize needed: %li\n", fsz);
+        /*printf("resize needed: %li\n", fsz);*/
     }
     /*munmap_fine(&pt);*/
     // TODO: all mmap() calls must use an offset divisible by page size ...
@@ -447,7 +480,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     close(fd);
     pthread_mutex_unlock(dm->bucket_locks + idx);
 
-    printf("exiting call with size (%i,%i)\n", keysz, valsz);
+    /*printf("exiting call with size (%i,%i)\n", keysz, valsz);*/
 }
 
 _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val, _Bool delete) {
@@ -468,9 +501,9 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     }
     lseek(fd, 0, SEEK_SET);
 
-    int iter = 0;
+    /*int iter = 0;*/
     while (off < fsz) {
-        printf("iteration %i - off %li, fsz %li\n", iter++, off, fsz);
+        /*printf("iteration %i - off %li, fsz %li\n", iter++, off, fsz);*/
         e = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + (keysz * 2));
         if (!(e->ksz || e->vsz)) {
             // why are we finding NIL entries in the beginning? look into insert
