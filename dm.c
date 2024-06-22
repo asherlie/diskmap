@@ -60,36 +60,17 @@ void init_diskmap(struct diskmap* dm, uint32_t n_pages, uint32_t n_buckets, char
     strcpy(dm->name, map_name);
     /* TODO: fix perms */
     mkdir(dm->name, 0777);
-    /*dm->entries_in_mem = 19;*/
     dm->hash_func = hash_func;
     dm->n_buckets = n_buckets;
-    /* TODO: consolidate these into a struct */
     dm->bucket_fns = malloc(sizeof(char*) * dm->n_buckets);
     dm->pages_in_memory = n_pages;
-    /*
-     * memset(&dm->pt, 0, sizeof(struct page_tracker));
-     * dm->pt.n_pages = n_pages;
-    */
+
     for (uint32_t i = 0; i < dm->n_buckets; ++i) {
         dm->bucket_fns[i] = calloc(sizeof(dm->name)*2 + 31, 1);
         snprintf(dm->bucket_fns[i], sizeof(dm->name)  + 31 + sizeof(dm->name), "%s/%s_%u", dm->name, dm->name, i);
     }
+
     mmap_locks(dm);
-}
-
-void* mmap_fine(int fd, off_t offset, uint32_t size, off_t* fine_off, size_t* adj_sz) {
-    long pgsz = sysconf(_SC_PAGE_SIZE);
-    uint32_t pgno = offset / pgsz;
-    /* increase size by the amount of extra bytes we're reading due to aligning with a page */
-    off_t adj_offset = pgno * pgsz;
-    *adj_sz = size + (offset % pgsz);
-    *fine_off = offset % pgsz;
-    /*
-     * printf("%li size %u -> pageno %u, adj_offset: %li\n", offset, size, pgno, pgno * pgsz);
-     * printf("reading %li bytes from offset %lu. a user offset of %li must be used\n", *adj_sz, adj_offset, *fine_off);
-    */
-
-    return mmap(0, *adj_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, adj_offset);
 }
 
 void munmap_fine(struct page_tracker* pt) {
