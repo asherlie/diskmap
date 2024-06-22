@@ -140,49 +140,15 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
             break;
         }
 
-        // seek forward to read actual data
-        /*off += sizeof(struct entry_hdr);*/
         /* if keysizes are !=, we don't need to compare keys */
-        // TODO:!!! when i'm iterating through the list, keep track of an empty section that can fit our new
-        // k/v pair!! this way we can fill deleted portions!
         if (e->ksz == keysz) {
-            // TODO: do i need to munmap() before i re-mmap()?
-            // TODO: all mmap() calls must use an offset divisible by page size ...
-            /*data = mmap(0, e->ksz + e->vsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);*/
-
-            /*ah, diff valsz makes this wrong instantly. with diff valsz, we need to fragment*/
-            /*nvm already handled*/
-
-            /*printf("found identical keysz of %i\n", keysz);*/
             if (!memcmp(data, key, keysz)) {
-                /*printf("found identical KEY of %s!\n", (char*)key);*/
                 /* overwrite entry and exit if new val fits in old val allocation
                  * otherwise, we have to fragment the bucket and erase this whole entry
                  */
-                /*
-                 * omg, the actual problem! we're not keeping track of the size difference
-                 * it would seem by looking at the updated e->ksz + e->vsz that we've allocated a smaller
-                 * region that we actually have for our data
-                 * we need a new field - e->padding or e->cap
-                 * USE NEW FIELD HERE
-                */
-                /*if (valsz <= e->vsz) {*/
                 if (valsz <= e->cap - e->ksz) {
-                    /*puts("found a region to fit new val");*/
-                    // this makes insertion offset wild
-                    /*hmmm, this still causes issue and it seems it isn't due to weird insertion sizes*/
-
-                    /* does this corrupt some part of scanning? if we keep reading from start, incrementing, etc.i think it should be fine because we
-                     *
-                     */
-                    
-                    /*e->vsz -= 5;*/
-                    
-                    /*printf("e->vsz %i -> %i, cap remains: %i\n", e->vsz, valsz, e->cap);*/
                     e->vsz = valsz;
                     memcpy(data + keysz, val, valsz);
-                    /*munmap(data[0], munmap_sz[0]);*/
-                    /*munmap(data[1], munmap_sz[1]);*/
                     goto cleanup;
                 }
                 // how do i mark this section as invalid without removing info about where next entry begins?
