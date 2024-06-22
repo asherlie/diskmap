@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 
 #include "dm.h"
 
@@ -55,6 +56,7 @@ void large_insertion_test(int n_buckets, int n_threads, int ins_per_thread) {
     if (n_threads == 1) {
         for (uint32_t i = 0; i < (uint32_t)ins_per_thread; ++i) {
             lookup_diskmap(&dm, 4, &i, &valsz, &lval);
+            assert(lval == i);
             if (lval != i) {
                 printf("%i != %i\n", lval, i);
                 /*weird, investigate this!*/
@@ -63,9 +65,32 @@ void large_insertion_test(int n_buckets, int n_threads, int ins_per_thread) {
     }
 }
 
+void isolate_bug() {
+    struct diskmap dm;
+    uint32_t valsz, lval;
+
+    init_diskmap(&dm, 1, 1, "bug", hash);
+
+    (void)valsz;
+    (void)lval;
+
+    for (int i = 0; i < 10021; ++i) {
+        insert_diskmap(&dm, 4, 4, &i, &i);
+        lookup_diskmap(&dm, 4, &i, &valsz, &lval);
+        if (valsz != 4) {
+            printf("bad valsz for %u\n", i);
+        }
+        if (lval != (unsigned)i) {
+            printf("bad val for %u, != %u\n", i, lval);
+        }
+    }
+}
+
 // TODO: confirm that insertions are succeeding and can be popped properly
 // potentially write this into large_insertion_test()
 int main() {
+    /*isolate_bug();*/
+    /*return 1;*/
     #if 1
     clock_t st;
     double elapsed;
@@ -75,7 +100,7 @@ int main() {
     // 13 crashes, 12 stable
     /*large_insertion_test(1, 1, 1021);*/
     /*large_insertion_test(1, 1, 1020);*/
-    large_insertion_test(1, 1, 205);
+    large_insertion_test(1, 1, 4021);
     elapsed = ((double)(clock()-st))/CLOCKS_PER_SEC;
     printf("%f elapsed\n", elapsed);
     /*pre-optimization this took 1.4-1.9 seconds*/
