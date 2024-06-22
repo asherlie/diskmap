@@ -18,14 +18,14 @@
 
 struct page_tracker{
     uint32_t n_pages;
-    /*int offset_range;*/
     uint32_t byte_offset_start, n_bytes;
 
     uint8_t* mapped;
 };
 
-// creates an mmap()'d file or opens one if it exists
-// and updates dm->bucket_locks
+/* creates an mmap()'d file or opens one if it exists
+ * and updates dm->bucket_locks
+ */
 void mmap_locks(struct diskmap* dm) {
     char lock_fn[30] = {0};
     int fd;
@@ -52,6 +52,8 @@ void mmap_locks(struct diskmap* dm) {
             pthread_mutex_init(dm->bucket_locks + i, NULL);
         }
     }
+    /* it's okay to close file descriptors that are mmap()d */
+    close(fd);
 }
 
 void init_diskmap(struct diskmap* dm, uint32_t n_pages, uint32_t n_buckets, char* map_name, int (*hash_func)(void*, uint32_t, uint32_t)) {
