@@ -151,49 +151,18 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
                     memcpy(data + keysz, val, valsz);
                     goto cleanup;
                 }
-                // how do i mark this section as invalid without removing info about where next entry begins?
-                // easy - if value is set to 0, we will understand key as meaning where next chunk starts
-                // this is a great solution because is still allows us to increment off by ksz + vsz
-                /*memset(e, 0, sizeof(struct entry_hdr));*/
+                /* setting e->vsz to 0 to indicate that this is a deleted entry */
                 e->ksz += e->vsz;
                 e->vsz = 0;
-                /* aha, i think this is the culprit! if valsz > e->vsz! we haven't mmap()d enough */
-                /*printf("marked region at off %li for overwriting due to lack of space for new value\n", off);*/
-                // hmm, maybe i shouldn't decrement size because size still is taken up
-                // TODO: make this more elegant, no reason to have two separate incrementations of off
-                /*maybe remove this... we're incrementing twice sometimes!*/
-                /*off += sizeof(struct entry_hdr) + e->ksz + e->vsz;*/
-                /*munmap(data[0], munmap_sz[0]);*/
-                /*munmap(data[1], munmap_sz[1]);*/
                 break;
-                // instead of breaking, we can just ensure that this is the last iteration and continue
-                // this way we don't have to explicitly increment off again
             }
         }
-        // TODO: not sure if mmap increments filepos or if i need to use off
-        // problem is here, e->ksz is impossibly large! 4160495616
-        // we're either reading from the wrong spot or ftruncate() doesn't zero the extended region
         off += sizeof(struct entry_hdr) + e->cap;
-        /*puts("incremented off");*/
-        /*munmap(data[0], munmap_sz[0]);*/
-        /*munmap(data[1], munmap_sz[1]);*/
     }
 
     /* this is reached if no duplicates are found OR a k/v pair now requires more space */
-    /*TODO:need to truncate file to fit new entry*/
-    /*if ()*/
     /*first, we check if we have an insertion_offset that will fit this. this will allow us to defragment a portion of our bucket*/
-    /*if (fsz <)*/
     /*okay, we can calculate bytes_in_use from the loop above. we shouldn't rely on any state anyway!*/
-    #if 0
-    if (insertion_offset == -1 && (off + sizeof(struct entry_hdr) + keysz + valsz >= (uint64_t)fsz)) {
-        /*puts("growing file...");*/
-        puts("RESIZE");
-        ftruncate(fd, (fsz = MAX(fsz * 2, fsz + sizeof(struct entry_hdr) + keysz + valsz)));
-    }
-    #endif
-    /*if (insertion_offset != -1) {*/
-    /*}*/
     if (insertion_offset == -1) {
         insertion_offset = off;
     }
