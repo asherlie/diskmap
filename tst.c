@@ -23,7 +23,7 @@ void* insert_th(void* v_ins_arg) {
     for (int i = 0; i < ia->n_insertions; ++i) {
         kv = ia->start_val + i;
         insert_diskmap(ia->dm, 4, 4, &kv, &kv);
-        /*printf("inserted %i\n", i);*/
+        /*printf("inserted %i: %i\n", kv, kv);*/
     }
     free(ia);
     return NULL;
@@ -34,7 +34,13 @@ void large_insertion_test(int n_buckets, int n_threads, int ins_per_thread) {
     pthread_t pth[n_threads];
     struct ins_arg* ia;
     struct diskmap dm;
-    init_diskmap(&dm, 10, n_buckets, "LIT", hash);
+    uint32_t valsz, lval;
+    // next step is to speed up low bucket insertions, checking for duplicates is incredibly slow
+    // hmm, this crash seems to have something to do with page numbers
+    // maybe we're on a page boundary and don't have logic to grab data from both - do some MAX()
+    // to expose this further, use just one page
+    /*init_diskmap(&dm, 10, n_buckets, "LIT", hash);*/
+    init_diskmap(&dm, 1, n_buckets, "LIT", hash);
 
     for (int i = 0; i < n_threads; ++i) {
         ia = malloc(sizeof(struct ins_arg));
@@ -46,8 +52,19 @@ void large_insertion_test(int n_buckets, int n_threads, int ins_per_thread) {
     for (int i = 0; i < n_threads; ++i) {
         pthread_join(pth[i], NULL);
     }
+    if (n_threads == 1) {
+        for (uint32_t i = 0; i < (uint32_t)ins_per_thread; ++i) {
+            lookup_diskmap(&dm, 4, &i, &valsz, &lval);
+            if (lval != i) {
+                printf("%i != %i\n", lval, i);
+                /*weird, investigate this!*/
+            }
+        }
+    }
 }
 
+// TODO: confirm that insertions are succeeding and can be popped properly
+// potentially write this into large_insertion_test()
 int main() {
     #if 1
     clock_t st;
@@ -56,7 +73,9 @@ int main() {
     // this crashes with a very large number of insertions and < 10000 bucket entries
     // why?
     // 13 crashes, 12 stable
-    large_insertion_test(1, 1, 13);
+    /*large_insertion_test(1, 1, 1021);*/
+    /*large_insertion_test(1, 1, 1020);*/
+    large_insertion_test(1, 1, 205);
     elapsed = ((double)(clock()-st))/CLOCKS_PER_SEC;
     printf("%f elapsed\n", elapsed);
     /*pre-optimization this took 1.4-1.9 seconds*/
