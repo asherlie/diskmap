@@ -31,6 +31,7 @@ void mmap_locks(struct diskmap* dm) {
     int fd;
     int target_sz; 
     _Bool exists;
+    pthread_mutexattr_t attr;
 
     snprintf(lock_fn, sizeof(lock_fn), "%s/%s.LOCK", dm->name, dm->name);
     fd = open(lock_fn, O_CREAT | O_RDWR, S_IRWXU);
@@ -39,6 +40,7 @@ void mmap_locks(struct diskmap* dm) {
     lseek(fd, 0, SEEK_SET);
     if (!exists) {
         ftruncate(fd, target_sz);
+        pthread_mutexattr_setpshared(&attr, 1);
     }
 
     dm->bucket_locks = mmap(0, target_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -49,8 +51,6 @@ void mmap_locks(struct diskmap* dm) {
 
     if (!exists) {
         for (uint32_t i = 0; i < dm->n_buckets; ++i) {
-            pthread_mutexattr_t attr;
-            pthread_mutexattr_setpshared(&attr, 1);
             pthread_mutex_init(dm->bucket_locks + i, &attr);
         }
     }
