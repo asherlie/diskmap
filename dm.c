@@ -49,7 +49,9 @@ void mmap_locks(struct diskmap* dm) {
 
     if (!exists) {
         for (uint32_t i = 0; i < dm->n_buckets; ++i) {
-            pthread_mutex_init(dm->bucket_locks + i, NULL);
+            pthread_mutexattr_t attr;
+            pthread_mutexattr_setpshared(&attr, 1);
+            pthread_mutex_init(dm->bucket_locks + i, &attr);
         }
     }
     /* it's okay to close file descriptors that are mmap()d */
