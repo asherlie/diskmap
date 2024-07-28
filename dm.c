@@ -16,12 +16,21 @@
 
 #include "dm.h"
 
+/* there's no need to have a page tracker between threads
+ * most of the benefit is from checking from duplicates, and
+ * since insertion is always in a region that has just been 
+ * checked, we'll never need to store pages more intelligently
+ *
+ * tracking pages between calls to insert()/lookup() would only
+ * improve performance marginally and add a lot of complexity
+ */
 struct page_tracker{
     uint32_t n_pages;
     uint32_t byte_offset_start, n_bytes;
 
     uint8_t* mapped;
 };
+
 
 /* creates an mmap()'d file or opens one if it exists
  * and updates dm->bucket_locks
@@ -79,7 +88,7 @@ void munmap_fine(struct page_tracker* pt) {
     munmap(pt->mapped, pt->n_bytes);
 }
 
-void* mmap_fine_optimized(struct page_tracker* pt, int fd, off_t offset, uint32_t size) {
+void* mmap_fine_optimized(struct page_tracker* pt, int fd, _Bool rdonly, off_t offset, uint32_t size) {
     long pgsz = sysconf(_SC_PAGE_SIZE);
     /* calculate starting page */
     uint32_t pgno = offset / pgsz;
@@ -99,7 +108,7 @@ void* mmap_fine_optimized(struct page_tracker* pt, int fd, off_t offset, uint32_
     pt->n_bytes = MAX(pgsz * pt->n_pages, size + offset - pt->byte_offset_start);
 
 
-    pt->mapped = mmap(0, pt->n_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, pt->byte_offset_start);
+    pt->mapped = mmap(0, pt->n_bytes, rdonly ? PROT_READ : PROT_READ | PROT_WRITE, MAP_SHARED, fd, pt->byte_offset_start);
     /*printf("re-MMAP required. %i -> %i\n", pt->byte_offset_start, pt->byte_offset_start + pt->n_bytes);*/
     assert(!(offset + size > pt->byte_offset_start + pt->n_bytes));
     return pt->mapped + (offset - pt->byte_offset_start);
@@ -127,12 +136,12 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     }
     lseek(fd, 0, SEEK_SET);
     while (!first && off < fsz) {
-        data = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + keysz + valsz);
+        data = mmap_fine_optimized(&pt, fd, 0, off, sizeof(struct entry_hdr) + keysz + valsz);
         e = (struct entry_hdr*)data;
         if (e->cap + e->ksz + e->vsz == 0) {
             break;
         }
-        data = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + e->cap);
+        data = mmap_fine_optimized(&pt, fd, 0, off, sizeof(struct entry_hdr) + e->cap);
         e = (struct entry_hdr*)data;
         data += sizeof(struct entry_hdr);
 
@@ -174,7 +183,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         ftruncate(fd, (fsz = MAX(fsz * 2, fsz + sizeof(struct entry_hdr) + keysz + valsz)));
     }
 
-    data = mmap_fine_optimized(&pt, fd, insertion_offset, sizeof(struct entry_hdr) + keysz + valsz);
+    data = mmap_fine_optimized(&pt, fd, 0, insertion_offset, sizeof(struct entry_hdr) + keysz + valsz);
     e = (struct entry_hdr*)data;
     e->vsz = valsz;
     e->ksz = keysz;
@@ -190,11 +199,9 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     pthread_mutex_unlock(dm->bucket_locks + idx);
 }
 
-_Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val, _Bool delete) {
+_Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val, _Bool delete, _Bool check_vsz_only) {
     int idx = dm->hash_func(key, keysz, dm->n_buckets);
-    /* TODO why doesn't O_RDONLY work for lookups */ 
-    /*int fd = open(dm->bucket_fns[idx], O_RDONLY);*/
-    int fd = open(dm->bucket_fns[idx], O_RDWR);
+    int fd = open(dm->bucket_fns[idx], delete ? O_RDWR : O_RDONLY);
     _Bool ret = 0;
     off_t fsz;
     off_t off = 0;
@@ -210,7 +217,7 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     lseek(fd, 0, SEEK_SET);
 
     while (off < fsz) {
-        e = mmap_fine_optimized(&pt, fd, off, sizeof(struct entry_hdr) + (keysz * 2));
+        e = mmap_fine_optimized(&pt, fd, 1, off, sizeof(struct entry_hdr) + (keysz * 2));
         if (!(e->ksz || e->vsz)) {
             goto cleanup;
         }
@@ -220,7 +227,7 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
             continue;
         }
         /* we don't need to mmap() e->cap here, only grab relevant bytes */
-        data = mmap_fine_optimized(&pt, fd, off, e->ksz + e->vsz);
+        data = mmap_fine_optimized(&pt, fd, 1, off, e->ksz + e->vsz);
         if (memcmp(data, key, keysz)) {
             off += e->cap;
             continue;
@@ -228,6 +235,10 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
 
         ret = 1;
         *valsz = e->vsz;
+
+        if (check_vsz_only) {
+            goto cleanup;
+        }
 
         if (delete) {
             e->ksz += e->vsz;
@@ -247,11 +258,15 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
 }
 
 _Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val) {
-    return lookup_diskmap_internal(dm, keysz, key, valsz, val, 0);
+    return lookup_diskmap_internal(dm, keysz, key, valsz, val, 0, 0);
 }
 
 /* remove_key_diskmap() sets e->vsz to 0, marking the region as reclaimable */
 _Bool remove_key_diskmap(struct diskmap* dm, uint32_t keysz, void* key) {
     uint32_t valsz;
-    return lookup_diskmap_internal(dm, keysz, key, &valsz, NULL, 1);
+    return lookup_diskmap_internal(dm, keysz, key, &valsz, NULL, 1, 0);
+}
+
+_Bool check_valsz_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz) {
+    return lookup_diskmap_internal(dm, keysz, key, valsz, NULL, 0, 1);
 }
