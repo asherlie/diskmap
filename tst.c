@@ -3,6 +3,7 @@
 #include <assert.h>
 
 #include "dm.h"
+/*#include "easy_dm.h"*/
 
 int hash(void* key, uint32_t keysz, uint32_t n_buckets) {
     if (keysz < sizeof(int)) {
@@ -30,6 +31,39 @@ void* insert_th(void* v_ins_arg) {
     return NULL;
 }
 
+/*
+ * void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* key, void* val);
+ * _Bool remove_key_diskmap(struct diskmap* dm, uint32_t keysz, void* key);
+ * _Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val);
+ * 
+*/
+uint32_t persistent_test() {
+    struct diskmap dm;
+    int keysz = 6;
+    uint32_t vsz = 2;
+    char key[6] = "sher";
+    char* lval;
+
+    srandom(time(NULL));
+
+    init_diskmap(&dm, 1, 10000, "PERSISTENT", hash);
+    if (check_valsz_diskmap(&dm, keysz, key, &vsz)) {
+        printf("found k/v pair with vsz: %i\n", vsz);
+        lval = calloc(vsz + 1, 1);
+        printf("lval: %p\n", lval);
+        lookup_diskmap(&dm, keysz, key, &vsz, lval);
+        /*printf("found \"%s\"\n", lval);*/
+        lval[vsz] = 'a' + rand() % 26;
+        insert_diskmap(&dm, keysz, vsz+1, key, lval);
+        free(lval);
+    } else {
+        printf("did not find k/v pair. inserting starter string\n");
+        insert_diskmap(&dm, keysz, 1, key, "0");
+    }
+    /*lookup_diskmap(&dm, keysz, key, &vsz);*/
+    return vsz;
+}
+
 // TODO: return elapsed time
 void large_insertion_test(int n_buckets, int n_threads, int ins_per_thread) {
     pthread_t pth[n_threads];
@@ -41,7 +75,10 @@ void large_insertion_test(int n_buckets, int n_threads, int ins_per_thread) {
     // maybe we're on a page boundary and don't have logic to grab data from both - do some MAX()
     // to expose this further, use just one page
     /*init_diskmap(&dm, 10, n_buckets, "LIT", hash);*/
-    init_diskmap(&dm, 1, n_buckets, "LIT", hash);
+    // hmm, if n_pages is too low we get bus errors, maybe we're not munmap()ing properly and too many maps remain
+    /*init_diskmap(&dm, 10, n_buckets, "LIT", hash);*/
+    init_diskmap(&dm, 90, n_buckets, "LIT", hash);
+    /*puts("INITIALIZED");*/
 
     for (int i = 0; i < n_threads; ++i) {
         ia = malloc(sizeof(struct ins_arg));
@@ -50,10 +87,12 @@ void large_insertion_test(int n_buckets, int n_threads, int ins_per_thread) {
         ia->n_insertions = ins_per_thread;
         pthread_create(pth+i, NULL, insert_th, ia);
     }
+    /*puts("CREATED threads");*/
     for (int i = 0; i < n_threads; ++i) {
         pthread_join(pth[i], NULL);
+        printf("joined thread %i\n", i);
     }
-    if (n_threads == 1) {
+    if (0 && n_threads == 1) {
         for (uint32_t i = 0; i < (uint32_t)ins_per_thread; ++i) {
             lookup_diskmap(&dm, 4, &i, &valsz, &lval);
             assert(lval == i);
@@ -86,12 +125,29 @@ void isolate_bug() {
     }
 }
 
+#ifdef REGISTER_TST
+REGISTER_DISKMAP(intint, int, int, NULL)
+#endif
+
 // TODO: confirm that insertions are succeeding and can be popped properly
 // potentially write this into large_insertion_test()
 int main() {
+    uint32_t prev_p = persistent_test(), p;
+    while (1) {
+        p = persistent_test();
+        if (p < prev_p) {
+            break;
+        }
+        prev_p = p;
+    }
+    return 0;
+    /*struct __internal_registered_dm_intint ii;*/
     /*isolate_bug();*/
     /*return 1;*/
-    #if 1
+    #ifdef REGISTER_ST
+    intint x;
+    insert_intint(&x, 4, 22);
+    #endif
     clock_t st;
     double elapsed;
     st = clock();
@@ -100,12 +156,14 @@ int main() {
     // 13 crashes, 12 stable
     /*large_insertion_test(1, 1, 1021);*/
     /*large_insertion_test(1, 1, 1020);*/
-    large_insertion_test(1, 1, 4021);
+    // TODO: why does this fail when run from two processes concurrently?
+    // one process hangs
+    large_insertion_test(10000, 10, 50000);
+    /*large_insertion_test(10, 10, 100);*/
     elapsed = ((double)(clock()-st))/CLOCKS_PER_SEC;
     printf("%f elapsed\n", elapsed);
     /*pre-optimization this took 1.4-1.9 seconds*/
     return 0;
-    #endif
 
     /*#endif*/
     struct diskmap dm;
