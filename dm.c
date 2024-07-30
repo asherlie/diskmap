@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <stdatomic.h>
 
 #include "dm.h"
 
@@ -67,6 +68,38 @@ void mmap_locks(struct diskmap* dm) {
     close(fd);
 }
 
+void mmap_n_lookups(struct diskmap* dm) {
+    char fn[30] = {0};
+    int fd;
+    int target_sz; 
+    _Bool exists;
+    pthread_mutexattr_t attr;
+
+    snprintf(fn, sizeof(fn), "%s/%s.LKU", dm->name, dm->name);
+    fd = open(fn, O_CREAT | O_RDWR, S_IRWXU);
+    target_sz = (sizeof(_Atomic int) * dm->n_buckets);
+    exists = lseek(fd, 0, SEEK_END) >= target_sz;
+    lseek(fd, 0, SEEK_SET);
+    if (!exists) {
+        ftruncate(fd, target_sz);
+        pthread_mutexattr_setpshared(&attr, 1);
+    }
+
+    dm->n_lookups = mmap(0, target_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
+    if (dm->bucket_locks == MAP_FAILED) {
+        perror("mmap()");
+    }
+
+    if (!exists) {
+        for (uint32_t i = 0; i < dm->n_buckets; ++i) {
+            atomic_init(dm->n_lookups + i, 0);
+        }
+    }
+    /* it's okay to close file descriptors that are mmap()d */
+    close(fd);
+}
+
 void init_diskmap(struct diskmap* dm, uint32_t n_pages, uint32_t n_buckets, char* map_name, int (*hash_func)(void*, uint32_t, uint32_t)) {
     strcpy(dm->name, map_name);
     /* TODO: fix perms */
@@ -82,6 +115,7 @@ void init_diskmap(struct diskmap* dm, uint32_t n_pages, uint32_t n_buckets, char
     }
 
     mmap_locks(dm);
+    mmap_n_lookups(dm);
 }
 
 void munmap_fine(struct page_tracker* pt) {
@@ -208,7 +242,51 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     struct entry_hdr* e;
     uint8_t* data;
     struct page_tracker pt = {.n_pages = dm->pages_in_memory, .byte_offset_start = 0, .n_bytes = 0};
+    /*
+     * we should maybe have both read and write locks, nvm just need write lock and need to make it so that
+     * multiple lookups can run without locks
+     * how do i do this?
+     * when did i become retarded?
+     *
+     * write some code that runs in multi processes 
+     * a test that looks up values!
+     * i'll speed it up greatly if i remove the requirement to lock during lookups
+     *
+     * maybe use atomic ints, 
+     * or atomic_cas()
+     * readers writers
+     *
+     * maybe some combo of CAS and mutex, if !(CAS), mutex
+     * idk...
+     *
+     * simultaneous lookups are totally fine, the second an insertion starts, however, we need to be careful
+     * so we can just wait to insert until all lookups are done, adding an extra locking layer to insertion
+     * lookup() will simply increment an atomic counter to keep track of n_lookups
+     * if this is > 0, insert() must wait BEFORE acquiring a lock
+     *
+     * this needs to be mmap()d just like the mutex lock file
+     * it can be put at the end of the smae file, or alternatively in  a separate one actually
+     * will be simpler - KISS
+     *
+     * lookup()
+     *  ++lookups[idx]
+     *  --lookups[idx]
+     *
+     *  CAS(lookups[idx]);
+     *
+     * insert()
+     *  ++insertions
+     *
+     *
+     * maybe not such a big deal since we have a lock for each bucket thouuuugh
+     * could still cause problems with low n_buckets or with a bad hashing func / uniform data
+    */
+    /*atomic_fetch_add();*/
     pthread_mutex_lock(dm->bucket_locks + idx);
+
+
+
+
     if ((fsz = lseek(fd, 0, SEEK_END)) <= 0) {
         ret = NULL;
         *valsz = 0;
