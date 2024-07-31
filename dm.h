@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 struct entry_hdr{
     /* cap is necessary to keep track of the amount of bytes taken up by an entry
@@ -16,7 +17,9 @@ struct diskmap{
     int (*hash_func)(void*, uint32_t, uint32_t);
     uint32_t n_buckets;
     char** bucket_fns;
-    pthread_mutex_t* bucket_locks;
+    //pthread_mutex_t* bucket_locks;
+    int* _Atomic lookup_counter;
+    int* _Atomic activity_counter;
 
     /*
      * ah, this can't be used because this must be specific to a file...
