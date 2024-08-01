@@ -16,7 +16,7 @@ struct entry_hdr{
 // both the members themselves and the struct counters are atomic, so we can do either
 struct counters{
     _Atomic uint32_t lookup_counter;
-    _Atomic uint32_t activity_counter;
+    _Atomic uint32_t insertion_counter;
 };
 
 struct diskmap{
@@ -25,8 +25,6 @@ struct diskmap{
     uint32_t n_buckets;
     char** bucket_fns;
     //pthread_mutex_t* bucket_locks;
-    int* _Atomic lookup_counter;
-    int* _Atomic activity_counter;
     struct counters* _Atomic counter;
 
     /*
