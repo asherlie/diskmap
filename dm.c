@@ -36,16 +36,17 @@ struct page_tracker{
 /* creates an mmap()'d file or opens one if it exists
  * and updates dm->bucket_locks
  */
-void mmap_locks(struct diskmap* dm) {
+#if 0
+void mmap_activity_counter(struct diskmap* dm) {
     char lock_fn[30] = {0};
     int fd;
     int target_sz; 
     _Bool exists;
     pthread_mutexattr_t attr;
 
-    snprintf(lock_fn, sizeof(lock_fn), "%s/%s.LOCK", dm->name, dm->name);
+    snprintf(lock_fn, sizeof(lock_fn), "%s/%s.AC", dm->name, dm->name);
     fd = open(lock_fn, O_CREAT | O_RDWR, S_IRWXU);
-    target_sz = (sizeof(pthread_mutex_t) * dm->n_buckets);
+    target_sz = (sizeof(_Atomic int) * dm->n_buckets);
     exists = lseek(fd, 0, SEEK_END) >= target_sz;
     lseek(fd, 0, SEEK_SET);
     if (!exists) {
@@ -53,29 +54,29 @@ void mmap_locks(struct diskmap* dm) {
         pthread_mutexattr_setpshared(&attr, 1);
     }
 
-    dm->bucket_locks = mmap(0, target_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    dm->activity_counter = mmap(0, target_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 
-    if (dm->bucket_locks == MAP_FAILED) {
+    if (dm->activity_counter == MAP_FAILED) {
         perror("mmap()");
     }
 
     if (!exists) {
         for (uint32_t i = 0; i < dm->n_buckets; ++i) {
-            pthread_mutex_init(dm->bucket_locks + i, &attr);
+            atomic_init(dm->activity_counter + i, 0);
         }
     }
     /* it's okay to close file descriptors that are mmap()d */
     close(fd);
 }
 
-void mmap_n_lookups(struct diskmap* dm) {
+void mmap_lookup_counter(struct diskmap* dm) {
     char fn[30] = {0};
     int fd;
     int target_sz; 
     _Bool exists;
     pthread_mutexattr_t attr;
 
-    snprintf(fn, sizeof(fn), "%s/%s.LKU", dm->name, dm->name);
+    snprintf(fn, sizeof(fn), "%s/%s.LC", dm->name, dm->name);
     fd = open(fn, O_CREAT | O_RDWR, S_IRWXU);
     target_sz = (sizeof(_Atomic int) * dm->n_buckets);
     exists = lseek(fd, 0, SEEK_END) >= target_sz;
@@ -85,15 +86,47 @@ void mmap_n_lookups(struct diskmap* dm) {
         pthread_mutexattr_setpshared(&attr, 1);
     }
 
-    dm->n_lookups = mmap(0, target_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    dm->lookup_counter = mmap(0, target_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 
-    if (dm->bucket_locks == MAP_FAILED) {
+    if (dm->activity_counter == MAP_FAILED) {
         perror("mmap()");
     }
 
     if (!exists) {
         for (uint32_t i = 0; i < dm->n_buckets; ++i) {
-            atomic_init(dm->n_lookups + i, 0);
+            atomic_init(dm->lookup_counter + i, 0);
+        }
+    }
+    /* it's okay to close file descriptors that are mmap()d */
+    close(fd);
+}
+#endif
+
+void mmap_counter_struct(struct diskmap* dm) {
+    char fn[30] = {0};
+    int fd;
+    int target_sz; 
+    _Bool exists;
+
+    snprintf(fn, sizeof(fn), "%s/%s.COU", dm->name, dm->name);
+    fd = open(fn, O_CREAT | O_RDWR, S_IRWXU);
+    target_sz = (sizeof(struct counters) * dm->n_buckets);
+    exists = lseek(fd, 0, SEEK_END) >= target_sz;
+    lseek(fd, 0, SEEK_SET);
+    if (!exists) {
+        ftruncate(fd, target_sz);
+    }
+
+    dm->counter = mmap(0, target_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
+    if (dm->counter == MAP_FAILED) {
+        perror("mmap()");
+    }
+
+    if (!exists) {
+        for (uint32_t i = 0; i < dm->n_buckets; ++i) {
+            atomic_init(&dm->counter[i].lookup_counter, 0);
+            atomic_init(&dm->counter[i].insertion_counter, 0);
         }
     }
     /* it's okay to close file descriptors that are mmap()d */
@@ -114,8 +147,11 @@ void init_diskmap(struct diskmap* dm, uint32_t n_pages, uint32_t n_buckets, char
         snprintf(dm->bucket_fns[i], sizeof(dm->name)  + 31 + sizeof(dm->name), "%s/%s_%u", dm->name, dm->name, i);
     }
 
-    mmap_locks(dm);
-    mmap_n_lookups(dm);
+    mmap_counter_struct(dm);
+    /*
+     * mmap_activity_counter(dm);
+     * mmap_lookup_counter(dm);
+    */
 }
 
 void munmap_fine(struct page_tracker* pt) {
@@ -162,7 +198,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     _Bool first = 0;
     struct page_tracker pt = {.n_pages = dm->pages_in_memory, .byte_offset_start = 0, .n_bytes = 0};
 
-    pthread_mutex_lock(dm->bucket_locks + idx);
+    /*pthread_mutex_lock(dm->bucket_locks + idx);*/
     if ((fsz = lseek(fd, 0, SEEK_END)) == 0) {
         ftruncate(fd, 5 * (sizeof(struct entry_hdr) + keysz + valsz));
         fsz = 5 * sizeof(struct entry_hdr) + (keysz + valsz);
@@ -230,7 +266,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     cleanup:
     munmap_fine(&pt);
     close(fd);
-    pthread_mutex_unlock(dm->bucket_locks + idx);
+    /*pthread_mutex_unlock(dm->bucket_locks + idx);*/
 }
 
 _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val, _Bool delete, _Bool check_vsz_only) {
@@ -264,6 +300,24 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
      * lookup() will simply increment an atomic counter to keep track of n_lookups
      * if this is > 0, insert() must wait BEFORE acquiring a lock
      *
+     *  ugh, nvm. this doesn't work. we need to NOT begin a lookup if we're already inserting as well
+     *  maybe i can use two atomics and no locks - one for insert and one for lookup
+     *
+     *  insert():
+     *      // if anything is going on, wait
+     *      if (activity_counter) wait
+     *      ++ins_counter; ++activity_counter
+     *      maybe set both together in a struct
+     *
+     *  lookup()
+     *      // if insertions are going on, wait
+     *      if (ins_counter) wait
+     *      ++activity_counter
+     *
+     *      we can have an activity counter and an insertion counter!
+     *      but won't they both need to be incremented simultaneously?
+     *      UGH. so hard to think about
+     *
      * this needs to be mmap()d just like the mutex lock file
      * it can be put at the end of the smae file, or alternatively in  a separate one actually
      * will be simpler - KISS
@@ -281,8 +335,18 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
      * maybe not such a big deal since we have a lock for each bucket thouuuugh
      * could still cause problems with low n_buckets or with a bad hashing func / uniform data
     */
-    /*atomic_fetch_add();*/
-    pthread_mutex_lock(dm->bucket_locks + idx);
+
+    // TODO: test to make sure this even improves performance
+    // there's a chance it degrades insertion performance
+    /*
+     * omg wait i can only enter this if there are no insertions, maybe scrap activity counter, just have insertion and lookup counter
+     * and we can check for double zero for insertions and for single zero for lookups!! this is hypothetically an improvement to locking because
+     * it allows us to have simultaneous lookups
+    */
+    struct counters tmp_cnt = {.lookup_counter = 0, .insertion_counter = 0};
+    atomic_fetch_add(dm->lookup_counter + idx, 1);
+    // need to also fetch add action counter
+    /*pthread_mutex_lock(dm->bucket_locks + idx);*/
 
 
 
@@ -331,7 +395,8 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     cleanup:
     close(fd);
     munmap_fine(&pt);
-    pthread_mutex_unlock(dm->bucket_locks + idx);
+    /*pthread_mutex_unlock(dm->bucket_locks + idx);*/
+    atomic_fetch_sub(dm->lookup_counter + idx, 1);
     return ret;
 }
 
