@@ -382,7 +382,8 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     /*pthread_mutex_lock(dm->bucket_locks + idx);*/
 
 
-    atomic_fetch_add(&dm->counter[idx].lookup_counter, 1);
+    uint32_t n_lookups;
+    n_lookups = 1 + atomic_fetch_add(&dm->counter[idx].lookup_counter, 1);
     /* spin until all insertions are complete, we can guarantee
      * that no new insertions will begin because lookup_counter is nonzero
      */
@@ -393,6 +394,9 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
 
     if (attempts > 0) {
         printf("took %i attempts to safely begin a lookup\n", attempts);
+    }
+    if (n_lookups > 1) {
+        printf("%i concurrent lookups!\n", n_lookups);
     }
 
 
