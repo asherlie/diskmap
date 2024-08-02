@@ -198,7 +198,28 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     _Bool first = 0;
     struct page_tracker pt = {.n_pages = dm->pages_in_memory, .byte_offset_start = 0, .n_bytes = 0};
 
+    struct counters updated_cnt = {.lookup_counter = 0, .insertion_counter = 1};
+    struct counters target_cnt;
+
+    int attempts = 0;
+
+    
+    while (1) {
+        memset(&target_cnt, 0, sizeof(struct counters));
+        if (atomic_compare_exchange_strong(&dm->counter[idx], &target_cnt, updated_cnt)) {
+            break;
+        }
+        ++attempts;
+        printf("%i %i\n", dm->counter[idx].lookup_counter, dm->counter[idx].insertion_counter);
+    }
+
+    if (attempts > 0) {
+        printf("acquired target insertion state in %i attempts\n", attempts);
+    }
+
     /*pthread_mutex_lock(dm->bucket_locks + idx);*/
+    // need to update n_insertions
+
     if ((fsz = lseek(fd, 0, SEEK_END)) == 0) {
         ftruncate(fd, 5 * (sizeof(struct entry_hdr) + keysz + valsz));
         fsz = 5 * sizeof(struct entry_hdr) + (keysz + valsz);
@@ -264,6 +285,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     memcpy((data + sizeof(struct entry_hdr) + keysz), val, valsz);
 
     cleanup:
+    atomic_fetch_sub(&dm->counter[idx].insertion_counter, 1);
     munmap_fine(&pt);
     close(fd);
     /*pthread_mutex_unlock(dm->bucket_locks + idx);*/
