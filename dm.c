@@ -343,11 +343,57 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
      * and we can check for double zero for insertions and for single zero for lookups!! this is hypothetically an improvement to locking because
      * it allows us to have simultaneous lookups
     */
-    struct counters tmp_cnt = {.lookup_counter = 0, .insertion_counter = 0};
-    atomic_fetch_add(dm->lookup_counter + idx, 1);
+    /*
+     * ugh, maybe i can actually make this good by atomically incrementing just lookups first, THEN, checking only for insertions
+     * similarly, for insertions, i can ONLY check for the activity ... damn this is hard
+     * for onw i think i should just update the entire struct at a time, this seems like it's the only way i caan get true thread safety
+     *
+     * just think through this
+     * does it make sense? 
+     *
+     * there's no reason i shouldn't be able to atomically manipulate the member of an atomic struct
+     *      
+     *      lookup(): // need to increment lookups, need to check insertions!! don't need to
+     *          CAS(counter[idx]->lookups, )
+    */
+    int attempts = 0;
+    #if 0
+    struct counters updated_cnt;
+    /*struct counters tmp_cnt = {.lookup_counter = 0, .insertion_counter = 0};*/
+    struct counters expected = atomic_load(&dm->counter[idx]);
+    while (1) {
+        // expected is auto-refilled each call
+        memcpy(&updated_cnt, &expected, sizeof(struct counters));
+        ++updated_cnt.lookup_counter;
+        /*
+         * this is a bad approach because it requires that lookups stay constant, this ideally shouldn't matter
+        */
+        /*atomic_fetch_add(dm->lookup_counter + idx, 1);*/
+        /*atomic_fetch_add(dm->counters[idx], 1);*/
+        /*check if any insertions are occurring*/
+        if (atomic_compare_exchange_strong(&dm->counter[idx], &expected, updated_cnt)) {
+            break;
+        }
+        ++attempts;
+    }
+
+    #endif
     // need to also fetch add action counter
     /*pthread_mutex_lock(dm->bucket_locks + idx);*/
 
+
+    atomic_fetch_add(&dm->counter[idx].lookup_counter, 1);
+    /* spin until all insertions are complete, we can guarantee
+     * that no new insertions will begin because lookup_counter is nonzero
+     */
+    while (atomic_load(&dm->counter[idx].insertion_counter)) {
+        ++attempts;
+    }
+    /*atomic_compare_exchange_strong(&dm->counter[idx].insertion_counter, 1);*/
+
+    if (attempts > 0) {
+        printf("took %i attempts to safely begin a lookup\n", attempts);
+    }
 
 
 
@@ -393,10 +439,13 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     }
 
     cleanup:
+    /*expected = atomic_load(&dm->counter[idx]);*/
+    // TODO: is this truly atomic or should i do a load first?
+    atomic_fetch_sub(&dm->counter[idx].lookup_counter, 1);
     close(fd);
     munmap_fine(&pt);
     /*pthread_mutex_unlock(dm->bucket_locks + idx);*/
-    atomic_fetch_sub(dm->lookup_counter + idx, 1);
+    /*atomic_fetch_sub(dm->lookup_counter + idx, 1);*/
     return ret;
 }
 
