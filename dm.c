@@ -154,16 +154,35 @@ void init_diskmap(struct diskmap* dm, uint32_t n_pages, uint32_t n_buckets, char
     */
 }
 
-// opportunistically munmap()s memory if no other lookup or insertion is occurring
-// otherwise, leaves it to be free()d at exit
-_Bool maybe_munmap() {
-}
-
 void munmap_fine(struct page_tracker* pt) {
     munmap(pt->mapped, pt->n_bytes);
 }
 
-void* mmap_fine_optimized(struct page_tracker* pt, int fd, _Bool rdonly, off_t offset, uint32_t size) {
+// opportunistically munmap()s memory if no other lookup or insertion is occurring
+// otherwise, leaves it to be free()d at exit
+ /*
+ *             1. increment n_insertions, 
+ *             2. check if n_lookups > 1
+ *             3. munmap if 2. is true
+ *             4. decrement n_insertions
+ *             5. decrement n_lookups
+ */
+// this is only to be called from within a lookup() with the guarantee that no insertion is underway
+_Bool _internal_lookup_maybe_munmap(struct page_tracker* pt, struct counters* counters) {
+    _Bool ret = 0;
+    atomic_fetch_add(&counters->insertion_counter, 1);
+    if (atomic_load(&counters->lookup_counter) == 1) {
+        ret = 1;
+        munmap_fine(pt);
+    }
+    atomic_fetch_sub(&counters->insertion_counter, 1);
+    return ret;
+}
+
+/* ctrs is set if caller is lookup(), in which case it is not always safe to munmap() due to concurrent lookups
+ * if this is set, mmap_fine_optimized() will opportunistically munmap() only if a guarantee of no double mmap()s can be made
+ */
+void* mmap_fine_optimized(struct page_tracker* pt, struct counters* ctrs, int fd, _Bool rdonly, off_t offset, uint32_t size) {
     long pgsz = sysconf(_SC_PAGE_SIZE);
     /* calculate starting page */
     uint32_t pgno = offset / pgsz;
@@ -174,7 +193,9 @@ void* mmap_fine_optimized(struct page_tracker* pt, int fd, _Bool rdonly, off_t o
             /*printf("this is contained within %i -> %i, we're good.\n", pt->byte_offset_start, pt->byte_offset_start + pt->n_bytes);*/
             return pt->mapped + offset - pt->byte_offset_start;
         }
+        // hmm, always safe to free if caller is insert()
         munmap(pt->mapped, pt->n_bytes);
+        _internal_lookup_maybe_munmap(&pt, &dm->counter[idx]);
     }
 
     pt->byte_offset_start = pgno * pgsz;
@@ -290,8 +311,9 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     memcpy((data + sizeof(struct entry_hdr) + keysz), val, valsz);
 
     cleanup:
-    atomic_fetch_sub(&dm->counter[idx].insertion_counter, 1);
+    // this is safe, no other threads will be active in this region
     munmap_fine(&pt);
+    atomic_fetch_sub(&dm->counter[idx].insertion_counter, 1);
     close(fd);
     /*pthread_mutex_unlock(dm->bucket_locks + idx);*/
 }
@@ -472,12 +494,14 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     cleanup:
     /*expected = atomic_load(&dm->counter[idx]);*/
     // TODO: is this truly atomic or should i do a load first?
-    atomic_fetch_sub(&dm->counter[idx].lookup_counter, 1);
-    close(fd);
     // how does this get corrupted with concurrent reads? and why is it here in he first place lol
     // removing this fixes the double free problem, but introduces another... jeez
     // okay, this unmaps for all allocations... how is this even possible. so annoying
-    munmap_fine(&pt);
+    /*munmap_fine(&pt);*/
+    _internal_lookup_maybe_munmap(&pt, &dm->counter[idx]);
+
+    atomic_fetch_sub(&dm->counter[idx].lookup_counter, 1);
+    close(fd);
 
 /*
  *     ugh, it seems like i may have to think hard about this. make a mmap()d memory tracker
