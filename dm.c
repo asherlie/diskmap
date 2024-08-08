@@ -154,6 +154,11 @@ void init_diskmap(struct diskmap* dm, uint32_t n_pages, uint32_t n_buckets, char
     */
 }
 
+// opportunistically munmap()s memory if no other lookup or insertion is occurring
+// otherwise, leaves it to be free()d at exit
+_Bool maybe_munmap() {
+}
+
 void munmap_fine(struct page_tracker* pt) {
     munmap(pt->mapped, pt->n_bytes);
 }
@@ -469,7 +474,45 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     // TODO: is this truly atomic or should i do a load first?
     atomic_fetch_sub(&dm->counter[idx].lookup_counter, 1);
     close(fd);
+    // how does this get corrupted with concurrent reads? and why is it here in he first place lol
+    // removing this fixes the double free problem, but introduces another... jeez
+    // okay, this unmaps for all allocations... how is this even possible. so annoying
     munmap_fine(&pt);
+
+/*
+ *     ugh, it seems like i may have to think hard about this. make a mmap()d memory tracker
+ *     and write maybe_munmap_fine(), this will be a lock free way to unmmap() if no other threads/processes
+ *     are using an mmap()d region
+ * 
+ *     hmm, actually, exiting automatically unmmap()s all mmap()d memory
+ *     as long as we don't run out of SOMETHING then we should be good to keep mmap()s active
+ *     with this knowledge, maybe we can opportunistically unmmap(). only when we exit and there are no other insertions perhaps
+ *     would be kind of difficult to guarantee safety for this, however, since we can't have any other lookups start
+ *     AHA!
+ *         we know that no new insertions may begin until lookup_counter is decremented
+ *         therefore, if we:
+ *             1. increment n_insertions, 
+ *             2. check if n_lookups > 1
+ *             3. munmap if 2. is true
+ *             4. decrement n_insertions
+ *             5. decrement n_lookups
+ *     
+ *         this allows us to munmap() when no other thread / process is in lookup() opportunistically
+ *         but continue as we would otherwise
+ * 
+ *         ah, actually - need to be careful within mmap_fine as well, add this logic to the internal munmap()s
+ *         should be doable
+ * 
+ *         a: i can use the maybe_munmap() using the above logic - BOTH here and in mmap_fine_optimized()
+ *         b: i can keep a list of addresses and munmap() at different intervals
+ *            this could get complicated because diff threads may free the same memory which is bad
+ * 
+ *         i'll go with a i think, i can write some metrics that will track the percent of munmap()s that succeed
+ *         and write some tests that use many threads both writing and reading to reason about how many failures there
+ *         will be. it may not be worth it to munmap() at all
+*/
+
+    /*munmap*/
     /*pthread_mutex_unlock(dm->bucket_locks + idx);*/
     /*atomic_fetch_sub(dm->lookup_counter + idx, 1);*/
     return ret;
