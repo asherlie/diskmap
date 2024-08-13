@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <unistd.h>
 
 #include "dm.h"
 /*#include "easy_dm.h"*/
@@ -37,6 +38,15 @@ void* insert_th(void* v_ins_arg) {
  * _Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val);
  * 
 */
+
+// this will do concurrent lookups to make sure the feature is actually working
+// i'll also need a test to atempt concurrent insertions to make sure nothign gets corrupted
+// with the new lock free approach
+
+// ah, don't need new tests just yet, running the current code in multiple processes fails
+void concurrent_lookup_speed_test() {
+}
+
 uint32_t persistent_test() {
     struct diskmap dm;
     int keysz = 6;
@@ -48,12 +58,17 @@ uint32_t persistent_test() {
 
     init_diskmap(&dm, 1, 10000, "PERSISTENT", hash);
     if (check_valsz_diskmap(&dm, keysz, key, &vsz)) {
-        printf("found k/v pair with vsz: %i\n", vsz);
-        lval = calloc(vsz + 1, 1);
-        printf("lval: %p\n", lval);
+        /*printf("found k/v pair with vsz: %i\n", vsz);*/
+        lval = calloc((vsz * 2) + 1, 1);
+        /*printf("lval: %p\n", lval);*/
         lookup_diskmap(&dm, keysz, key, &vsz, lval);
         /*printf("found \"%s\"\n", lval);*/
-        lval[vsz] = 'a' + rand() % 26;
+        lval[vsz] = 'a' + rand() % 26; // this is an invalid write apparently, not enough lval is calloc'd. is this free()d btw?
+        // AHA! this exposed an issue with this test!!! there's no guarantee that no other values are inserted between check() and lookup()
+        // i've fixed this by allocating twice as much mem as needed
+        key[0] = rand();
+        key[1] = rand();
+        key[2] = rand();
         insert_diskmap(&dm, keysz, vsz+1, key, lval);
         free(lval);
     } else {
@@ -61,6 +76,7 @@ uint32_t persistent_test() {
         insert_diskmap(&dm, keysz, 1, key, "0");
     }
     /*lookup_diskmap(&dm, keysz, key, &vsz);*/
+    free_diskmap(&dm);
     return vsz;
 }
 
@@ -129,16 +145,64 @@ void isolate_bug() {
 REGISTER_DISKMAP(intint, int, int, NULL)
 #endif
 
+void pagesz_insertion_tst() {
+    struct diskmap dm;
+    long pgsz = sysconf(_SC_PAGE_SIZE);
+    uint32_t valsz = pgsz - sizeof(struct entry_hdr) - sizeof(int) + 1;
+    uint32_t valsz_lookup;
+    uint8_t* data = malloc(valsz);
+    int key = 0;
+    init_diskmap(&dm, 1, 1, "PSIT", hash);
+
+    insert_diskmap(&dm, sizeof(int), valsz, &key, data);
+    check_valsz_diskmap(&dm, sizeof(int), &key, &valsz_lookup);
+
+    if (valsz != valsz_lookup) {
+        printf("%i != %i\n", valsz, valsz_lookup);
+    } else {
+        puts("SUCCESS");
+    }
+}
+
 // TODO: confirm that insertions are succeeding and can be popped properly
 // potentially write this into large_insertion_test()
+// OMG! i think that this is the first out of page value that we see!!! let's see if i increase n_pages if it doubles!
+/*
+ * yep, it roughly doubled. we need to fix some weird page bytes issue. maybe it's a problem with npages loaded in
+ * based on size
+*/
+/*works just fine on thinkpad, seeing state 0 -1 on raspbi though, some bad stuff somewhere, maybe due to lack of memory fence*/
 int main() {
+    /*
+     * for (int i = 0; i < 4080; ++i) {
+     *     persistent_test();
+     * }
+     * return 0;
+    */
+    /*
+     * pagesz_insertion_tst();
+     * return 1;
+    */
     uint32_t prev_p = persistent_test(), p;
-    while (1) {
+    int total = 1000;
+    /*while (1) {*/
+    for (int i = 0; i < total; ++i) {
+        /*printf("%i\n", i);*/
+        /*printf("\r%.2lf%%   ", (double)(i*100)/total);*/
+        printf("\r%i%%   ", (i*100)/total);
+        /*uhh, this stops at 4078, there's some weird issue
+         * with page size
+         */ 
         p = persistent_test();
+        // removing this due to paralel testing, this does not hold true if two processes are inserting simultaneously
+        #if 0
         if (p < prev_p) {
+            printf("%i < %i\n", p, prev_p);
             break;
         }
+        #endif
         prev_p = p;
+        (void)prev_p;
     }
     return 0;
     /*struct __internal_registered_dm_intint ii;*/
