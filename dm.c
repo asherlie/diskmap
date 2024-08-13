@@ -154,6 +154,13 @@ void init_diskmap(struct diskmap* dm, uint32_t n_pages, uint32_t n_buckets, char
     */
 }
 
+void free_diskmap(struct diskmap* dm) {
+    for (uint32_t i = 0; i < dm->n_buckets; ++i) {
+        free(dm->bucket_fns[i]);
+    }
+    free(dm->bucket_fns);
+}
+
 void munmap_fine(struct page_tracker* pt) {
     munmap(pt->mapped, pt->n_bytes);
 }
@@ -194,14 +201,18 @@ void* mmap_fine_optimized(struct page_tracker* pt, struct counters* ctrs, int fd
             return pt->mapped + offset - pt->byte_offset_start;
         }
         // hmm, always safe to free if caller is insert()
-        munmap(pt->mapped, pt->n_bytes);
-        _internal_lookup_maybe_munmap(&pt, &dm->counter[idx]);
+        if (ctrs) {
+            _internal_lookup_maybe_munmap(pt, ctrs);
+        } else {
+            munmap(pt->mapped, pt->n_bytes);
+        }
     }
 
     pt->byte_offset_start = pgno * pgsz;
     /*printf("nbytes = MAX(%li, %li)\n", pgsz * pt->n_pages, size + offset - pt->byte_offset_start);*/
     /* we may need to mmap() more than pt->n_pages if our data is between page boundaries */
     pt->n_bytes = MAX(pgsz * pt->n_pages, size + offset - pt->byte_offset_start);
+    /*printf("needed to allocate chunk of %i bytes from %i\n", pt->n_bytes, pt->byte_offset_start);*/
 
 
     pt->mapped = mmap(0, pt->n_bytes, rdonly ? PROT_READ : PROT_READ | PROT_WRITE, MAP_SHARED, fd, pt->byte_offset_start);
@@ -211,6 +222,7 @@ void* mmap_fine_optimized(struct page_tracker* pt, struct counters* ctrs, int fd
 }
 
 
+// a problem arises when valsz >= pagesz
 void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* key, void* val) {
     int idx = dm->hash_func(key, keysz, dm->n_buckets);
     int fd = open(dm->bucket_fns[idx], O_CREAT | O_RDWR, S_IRWXU);
@@ -224,7 +236,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     _Bool first = 0;
     struct page_tracker pt = {.n_pages = dm->pages_in_memory, .byte_offset_start = 0, .n_bytes = 0};
 
-    struct counters updated_cnt = {.lookup_counter = 0, .insertion_counter = 1};
+    const struct counters updated_cnt = {.lookup_counter = 0, .insertion_counter = 1};
     struct counters target_cnt;
 
     int attempts = 0;
@@ -236,7 +248,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
             break;
         }
         ++attempts;
-        printf("%i %i\n", dm->counter[idx].lookup_counter, dm->counter[idx].insertion_counter);
+        printf("  %i %i\n", dm->counter[idx].lookup_counter, dm->counter[idx].insertion_counter);
     }
 
     if (attempts > 0) {
@@ -253,12 +265,13 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     }
     lseek(fd, 0, SEEK_SET);
     while (!first && off < fsz) {
-        data = mmap_fine_optimized(&pt, fd, 0, off, sizeof(struct entry_hdr) + keysz + valsz);
+        /*printf("valsz: %i\n", valsz);*/
+        data = mmap_fine_optimized(&pt, NULL, fd, 0, off, sizeof(struct entry_hdr) + keysz + valsz);
         e = (struct entry_hdr*)data;
         if (e->cap + e->ksz + e->vsz == 0) {
             break;
         }
-        data = mmap_fine_optimized(&pt, fd, 0, off, sizeof(struct entry_hdr) + e->cap);
+        data = mmap_fine_optimized(&pt, NULL, fd, 0, off, sizeof(struct entry_hdr) + e->cap);
         e = (struct entry_hdr*)data;
         data += sizeof(struct entry_hdr);
 
@@ -300,7 +313,9 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         ftruncate(fd, (fsz = MAX(fsz * 2, fsz + sizeof(struct entry_hdr) + keysz + valsz)));
     }
 
-    data = mmap_fine_optimized(&pt, fd, 0, insertion_offset, sizeof(struct entry_hdr) + keysz + valsz);
+    // investigating why page size data fails, is there some quirk if keysz + valsz is > 1 page, look into *_optimized()
+    /*printf("requesting chunk from offset %li of size %li\n", insertion_offset, sizeof(struct entry_hdr) + keysz + valsz);*/
+    data = mmap_fine_optimized(&pt, NULL, fd, 0, insertion_offset, sizeof(struct entry_hdr) + keysz + valsz);
     e = (struct entry_hdr*)data;
     e->vsz = valsz;
     e->ksz = keysz;
@@ -312,10 +327,12 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
 
     cleanup:
     // this is safe, no other threads will be active in this region
+    // still causing problems for some reason though
+    /*this should never double free because no two threads should EVER simultaneously be in this critical section*/
+    /*printf("munmap()ing %i -> %i\n", pt.byte_offset_start, pt.n_bytes);*/
     munmap_fine(&pt);
-    atomic_fetch_sub(&dm->counter[idx].insertion_counter, 1);
     close(fd);
-    /*pthread_mutex_unlock(dm->bucket_locks + idx);*/
+    atomic_fetch_sub(&dm->counter[idx].insertion_counter, 1);
 }
 
 _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val, _Bool delete, _Bool check_vsz_only) {
@@ -430,12 +447,12 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     // need to also fetch add action counter
     /*pthread_mutex_lock(dm->bucket_locks + idx);*/
 
-
     uint32_t n_lookups;
     n_lookups = 1 + atomic_fetch_add(&dm->counter[idx].lookup_counter, 1);
     /* spin until all insertions are complete, we can guarantee
      * that no new insertions will begin because lookup_counter is nonzero
      */
+    // this is hanging with new feature, probably because of an incrementation without dec of insertion counter somewhere
     while (atomic_load(&dm->counter[idx].insertion_counter)) {
         ++attempts;
     }
@@ -458,19 +475,28 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     lseek(fd, 0, SEEK_SET);
 
     while (off < fsz) {
-        e = mmap_fine_optimized(&pt, fd, 1, off, sizeof(struct entry_hdr) + (keysz * 2));
+        e = mmap_fine_optimized(&pt, &dm->counter[idx], fd, 1, off, sizeof(struct entry_hdr) + (keysz * 2));
+        /* b dm.c:486 if e->vsz == 0 */
+        // here, i check if vsz == 0, this is where i should start my search. work backwawrds
         if (!(e->ksz || e->vsz)) {
             goto cleanup;
         }
-        off += sizeof(struct entry_hdr);
+        // AH, obviously reproduce with a single insertion... duh
+        // insert, lookup sz, print
+        if (e->vsz == 0) {
+            puts("found empty vsz");
+        }
+        /*off += sizeof(struct entry_hdr);*/
         if (e->vsz == 0 || e->ksz != keysz) {
-            off += e->cap;
+            off += sizeof(struct entry_hdr) + e->cap;
             continue;
         }
         /* we don't need to mmap() e->cap here, only grab relevant bytes */
-        data = mmap_fine_optimized(&pt, fd, 1, off, e->ksz + e->vsz);
+        e = mmap_fine_optimized(&pt, &dm->counter[idx], fd, 1, off, sizeof(struct entry_hdr) + e->ksz + e->vsz);
+        data = (uint8_t*)e + sizeof(struct entry_hdr);
         if (memcmp(data, key, keysz)) {
-            off += e->cap;
+            /*off += e->cap;*/
+            off += sizeof(struct entry_hdr) + e->cap;
             continue;
         }
 
