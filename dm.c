@@ -121,13 +121,11 @@ void* mmap_fine_optimized(struct page_tracker* pt, struct counters* ctrs, int fd
     /* calculate starting page */
     uint32_t pgno = offset / pgsz;
 
-    /*printf("got a request for offset %li -> %lu\n", offset, offset + size);*/
     if (pt->n_bytes) {
         if (offset >= pt->byte_offset_start && offset + size <= pt->byte_offset_start + pt->n_bytes) {
-            /*printf("this is contained within %i -> %i, we're good.\n", pt->byte_offset_start, pt->byte_offset_start + pt->n_bytes);*/
             return pt->mapped + offset - pt->byte_offset_start;
         }
-        // hmm, always safe to free if caller is insert()
+        /* it's always safe to munmap() if the caller is insert() */
         if (ctrs) {
             _internal_lookup_maybe_munmap(pt, ctrs);
         } else {
@@ -136,20 +134,15 @@ void* mmap_fine_optimized(struct page_tracker* pt, struct counters* ctrs, int fd
     }
 
     pt->byte_offset_start = pgno * pgsz;
-    /*printf("nbytes = MAX(%li, %li)\n", pgsz * pt->n_pages, size + offset - pt->byte_offset_start);*/
     /* we may need to mmap() more than pt->n_pages if our data is between page boundaries */
     pt->n_bytes = MAX(pgsz * pt->n_pages, size + offset - pt->byte_offset_start);
-    /*printf("needed to allocate chunk of %i bytes from %i\n", pt->n_bytes, pt->byte_offset_start);*/
-
 
     pt->mapped = mmap(0, pt->n_bytes, rdonly ? PROT_READ : PROT_READ | PROT_WRITE, MAP_SHARED, fd, pt->byte_offset_start);
-    /*printf("re-MMAP required. %i -> %i\n", pt->byte_offset_start, pt->byte_offset_start + pt->n_bytes);*/
     assert(!(offset + size > pt->byte_offset_start + pt->n_bytes));
     return pt->mapped + (offset - pt->byte_offset_start);
 }
 
 
-// a problem arises when valsz >= pagesz
 void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* key, void* val) {
     int idx = dm->hash_func(key, keysz, dm->n_buckets);
     int fd = open(dm->bucket_fns[idx], O_CREAT | O_RDWR, S_IRWXU);
@@ -182,9 +175,6 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         printf("acquired target insertion state in %i attempts\n", attempts);
     }
 
-    /*pthread_mutex_lock(dm->bucket_locks + idx);*/
-    // need to update n_insertions
-
     if ((fsz = lseek(fd, 0, SEEK_END)) == 0) {
         ftruncate(fd, 5 * (sizeof(struct entry_hdr) + keysz + valsz));
         fsz = 5 * sizeof(struct entry_hdr) + (keysz + valsz);
@@ -192,7 +182,6 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     }
     lseek(fd, 0, SEEK_SET);
     while (!first && off < fsz) {
-        /*printf("valsz: %i\n", valsz);*/
         data = mmap_fine_optimized(&pt, NULL, fd, 0, off, sizeof(struct entry_hdr) + keysz + valsz);
         e = (struct entry_hdr*)data;
         if (e->cap + e->ksz + e->vsz == 0) {
@@ -240,8 +229,6 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         ftruncate(fd, (fsz = MAX(fsz * 2, fsz + sizeof(struct entry_hdr) + keysz + valsz)));
     }
 
-    // investigating why page size data fails, is there some quirk if keysz + valsz is > 1 page, look into *_optimized()
-    /*printf("requesting chunk from offset %li of size %li\n", insertion_offset, sizeof(struct entry_hdr) + keysz + valsz);*/
     data = mmap_fine_optimized(&pt, NULL, fd, 0, insertion_offset, sizeof(struct entry_hdr) + keysz + valsz);
     e = (struct entry_hdr*)data;
     e->vsz = valsz;
@@ -253,10 +240,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     memcpy((data + sizeof(struct entry_hdr) + keysz), val, valsz);
 
     cleanup:
-    // this is safe, no other threads will be active in this region
-    // still causing problems for some reason though
-    /*this should never double free because no two threads should EVER simultaneously be in this critical section*/
-    /*printf("munmap()ing %i -> %i\n", pt.byte_offset_start, pt.n_bytes);*/
+    /* this explicit munmap() is safe, as no other threads will be active in this region */
     munmap_fine(&pt);
     close(fd);
     atomic_fetch_sub(&dm->counter[idx].insertion_counter, 1);
