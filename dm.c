@@ -95,20 +95,23 @@ void munmap_fine(struct page_tracker* pt) {
  * opportunistically munmap()s memory if no other lookup or insertion is occurring
  * otherwise, leaves it to be free()d at exit
  *
- *   1. increment n_insertions, 
- *   2. check if n_lookups > 1
+ *   1. increment n_insertions // handled by caller
+ *   2. check if n_lookups == 1
  *   3. munmap if 2. is true
  *   4. decrement n_insertions
- *   5. decrement n_lookups
+ *   5. decrement n_lookups // handled by caller
  */
 /* this is only to be called from within a lookup() with the guarantee that no insertion is underway */
 _Bool _internal_lookup_maybe_munmap(struct page_tracker* pt, struct counters* counters) {
     _Bool ret = 0;
+    /* guarantees that no other lookups will begin */
     atomic_fetch_add(&counters->insertion_counter, 1);
+    /* munmap() only if we're in the only current lookup thread */
     if (atomic_load(&counters->lookup_counter) == 1) {
         ret = 1;
         munmap_fine(pt);
     }
+    /* back to business as usual */
     atomic_fetch_sub(&counters->insertion_counter, 1);
     return ret;
 }
@@ -266,7 +269,6 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     while (atomic_load(&dm->counter[idx].insertion_counter)) {
         ++attempts;
     }
-    /*atomic_compare_exchange_strong(&dm->counter[idx].insertion_counter, 1);*/
 
     if (attempts > 0) {
         printf("took %i attempts to safely begin a lookup\n", attempts);
@@ -274,8 +276,6 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     if (n_lookups > 1) {
         printf("%i concurrent lookups!\n", n_lookups);
     }
-
-
 
     if ((fsz = lseek(fd, 0, SEEK_END)) <= 0) {
         ret = NULL;
@@ -286,26 +286,21 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
 
     while (off < fsz) {
         e = mmap_fine_optimized(&pt, &dm->counter[idx], fd, 1, off, sizeof(struct entry_hdr) + (keysz * 2));
-        /* b dm.c:486 if e->vsz == 0 */
-        // here, i check if vsz == 0, this is where i should start my search. work backwawrds
         if (!(e->ksz || e->vsz)) {
             goto cleanup;
         }
-        // AH, obviously reproduce with a single insertion... duh
-        // insert, lookup sz, print
         if (e->vsz == 0) {
             puts("found empty vsz");
         }
-        /*off += sizeof(struct entry_hdr);*/
         if (e->vsz == 0 || e->ksz != keysz) {
             off += sizeof(struct entry_hdr) + e->cap;
             continue;
         }
+
         /* we don't need to mmap() e->cap here, only grab relevant bytes */
         e = mmap_fine_optimized(&pt, &dm->counter[idx], fd, 1, off, sizeof(struct entry_hdr) + e->ksz + e->vsz);
         data = (uint8_t*)e + sizeof(struct entry_hdr);
         if (memcmp(data, key, keysz)) {
-            /*off += e->cap;*/
             off += sizeof(struct entry_hdr) + e->cap;
             continue;
         }
@@ -328,53 +323,11 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     }
 
     cleanup:
-    /*expected = atomic_load(&dm->counter[idx]);*/
-    // TODO: is this truly atomic or should i do a load first?
-    // how does this get corrupted with concurrent reads? and why is it here in he first place lol
-    // removing this fixes the double free problem, but introduces another... jeez
-    // okay, this unmaps for all allocations... how is this even possible. so annoying
-    /*munmap_fine(&pt);*/
     _internal_lookup_maybe_munmap(&pt, &dm->counter[idx]);
 
     atomic_fetch_sub(&dm->counter[idx].lookup_counter, 1);
     close(fd);
 
-/*
- *     ugh, it seems like i may have to think hard about this. make a mmap()d memory tracker
- *     and write maybe_munmap_fine(), this will be a lock free way to unmmap() if no other threads/processes
- *     are using an mmap()d region
- * 
- *     hmm, actually, exiting automatically unmmap()s all mmap()d memory
- *     as long as we don't run out of SOMETHING then we should be good to keep mmap()s active
- *     with this knowledge, maybe we can opportunistically unmmap(). only when we exit and there are no other insertions perhaps
- *     would be kind of difficult to guarantee safety for this, however, since we can't have any other lookups start
- *     AHA!
- *         we know that no new insertions may begin until lookup_counter is decremented
- *         therefore, if we:
- *             1. increment n_insertions, 
- *             2. check if n_lookups > 1
- *             3. munmap if 2. is true
- *             4. decrement n_insertions
- *             5. decrement n_lookups
- *     
- *         this allows us to munmap() when no other thread / process is in lookup() opportunistically
- *         but continue as we would otherwise
- * 
- *         ah, actually - need to be careful within mmap_fine as well, add this logic to the internal munmap()s
- *         should be doable
- * 
- *         a: i can use the maybe_munmap() using the above logic - BOTH here and in mmap_fine_optimized()
- *         b: i can keep a list of addresses and munmap() at different intervals
- *            this could get complicated because diff threads may free the same memory which is bad
- * 
- *         i'll go with a i think, i can write some metrics that will track the percent of munmap()s that succeed
- *         and write some tests that use many threads both writing and reading to reason about how many failures there
- *         will be. it may not be worth it to munmap() at all
-*/
-
-    /*munmap*/
-    /*pthread_mutex_unlock(dm->bucket_locks + idx);*/
-    /*atomic_fetch_sub(dm->lookup_counter + idx, 1);*/
     return ret;
 }
 
