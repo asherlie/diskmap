@@ -78,10 +78,6 @@ void init_diskmap(struct diskmap* dm, uint32_t n_pages, uint32_t n_buckets, char
     }
 
     mmap_counter_struct(dm);
-    /*
-     * mmap_activity_counter(dm);
-     * mmap_lookup_counter(dm);
-    */
 }
 
 void free_diskmap(struct diskmap* dm) {
@@ -95,16 +91,17 @@ void munmap_fine(struct page_tracker* pt) {
     munmap(pt->mapped, pt->n_bytes);
 }
 
-// opportunistically munmap()s memory if no other lookup or insertion is occurring
-// otherwise, leaves it to be free()d at exit
- /*
- *             1. increment n_insertions, 
- *             2. check if n_lookups > 1
- *             3. munmap if 2. is true
- *             4. decrement n_insertions
- *             5. decrement n_lookups
+/*
+ * opportunistically munmap()s memory if no other lookup or insertion is occurring
+ * otherwise, leaves it to be free()d at exit
+ *
+ *   1. increment n_insertions, 
+ *   2. check if n_lookups > 1
+ *   3. munmap if 2. is true
+ *   4. decrement n_insertions
+ *   5. decrement n_lookups
  */
-// this is only to be called from within a lookup() with the guarantee that no insertion is underway
+/* this is only to be called from within a lookup() with the guarantee that no insertion is underway */
 _Bool _internal_lookup_maybe_munmap(struct page_tracker* pt, struct counters* counters) {
     _Bool ret = 0;
     atomic_fetch_add(&counters->insertion_counter, 1);
