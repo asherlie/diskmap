@@ -240,12 +240,13 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     memcpy((data + sizeof(struct entry_hdr) + keysz), val, valsz);
 
     cleanup:
-    /* this explicit munmap() is safe, as no other threads will be active in this region */
+    /* this explicit munmap() is safe, as no other threads will be active in this section */
     munmap_fine(&pt);
     close(fd);
     atomic_fetch_sub(&dm->counter[idx].insertion_counter, 1);
 }
 
+/* TODO: is lock free approach worth the added complexity? run some tests */
 _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val, _Bool delete, _Bool check_vsz_only) {
     int idx = dm->hash_func(key, keysz, dm->n_buckets);
     int fd = open(dm->bucket_fns[idx], delete ? O_RDWR : O_RDONLY);
@@ -255,115 +256,13 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     struct entry_hdr* e;
     uint8_t* data;
     struct page_tracker pt = {.n_pages = dm->pages_in_memory, .byte_offset_start = 0, .n_bytes = 0};
-    /*
-     * we should maybe have both read and write locks, nvm just need write lock and need to make it so that
-     * multiple lookups can run without locks
-     * how do i do this?
-     * when did i become retarded?
-     *
-     * write some code that runs in multi processes 
-     * a test that looks up values!
-     * i'll speed it up greatly if i remove the requirement to lock during lookups
-     *
-     * maybe use atomic ints, 
-     * or atomic_cas()
-     * readers writers
-     *
-     * maybe some combo of CAS and mutex, if !(CAS), mutex
-     * idk...
-     *
-     * simultaneous lookups are totally fine, the second an insertion starts, however, we need to be careful
-     * so we can just wait to insert until all lookups are done, adding an extra locking layer to insertion
-     * lookup() will simply increment an atomic counter to keep track of n_lookups
-     * if this is > 0, insert() must wait BEFORE acquiring a lock
-     *
-     *  ugh, nvm. this doesn't work. we need to NOT begin a lookup if we're already inserting as well
-     *  maybe i can use two atomics and no locks - one for insert and one for lookup
-     *
-     *  insert():
-     *      // if anything is going on, wait
-     *      if (activity_counter) wait
-     *      ++ins_counter; ++activity_counter
-     *      maybe set both together in a struct
-     *
-     *  lookup()
-     *      // if insertions are going on, wait
-     *      if (ins_counter) wait
-     *      ++activity_counter
-     *
-     *      we can have an activity counter and an insertion counter!
-     *      but won't they both need to be incremented simultaneously?
-     *      UGH. so hard to think about
-     *
-     * this needs to be mmap()d just like the mutex lock file
-     * it can be put at the end of the smae file, or alternatively in  a separate one actually
-     * will be simpler - KISS
-     *
-     * lookup()
-     *  ++lookups[idx]
-     *  --lookups[idx]
-     *
-     *  CAS(lookups[idx]);
-     *
-     * insert()
-     *  ++insertions
-     *
-     *
-     * maybe not such a big deal since we have a lock for each bucket thouuuugh
-     * could still cause problems with low n_buckets or with a bad hashing func / uniform data
-    */
-
-    // TODO: test to make sure this even improves performance
-    // there's a chance it degrades insertion performance
-    /*
-     * omg wait i can only enter this if there are no insertions, maybe scrap activity counter, just have insertion and lookup counter
-     * and we can check for double zero for insertions and for single zero for lookups!! this is hypothetically an improvement to locking because
-     * it allows us to have simultaneous lookups
-    */
-    /*
-     * ugh, maybe i can actually make this good by atomically incrementing just lookups first, THEN, checking only for insertions
-     * similarly, for insertions, i can ONLY check for the activity ... damn this is hard
-     * for onw i think i should just update the entire struct at a time, this seems like it's the only way i caan get true thread safety
-     *
-     * just think through this
-     * does it make sense? 
-     *
-     * there's no reason i shouldn't be able to atomically manipulate the member of an atomic struct
-     *      
-     *      lookup(): // need to increment lookups, need to check insertions!! don't need to
-     *          CAS(counter[idx]->lookups, )
-    */
     int attempts = 0;
-    #if 0
-    struct counters updated_cnt;
-    /*struct counters tmp_cnt = {.lookup_counter = 0, .insertion_counter = 0};*/
-    struct counters expected = atomic_load(&dm->counter[idx]);
-    while (1) {
-        // expected is auto-refilled each call
-        memcpy(&updated_cnt, &expected, sizeof(struct counters));
-        ++updated_cnt.lookup_counter;
-        /*
-         * this is a bad approach because it requires that lookups stay constant, this ideally shouldn't matter
-        */
-        /*atomic_fetch_add(dm->lookup_counter + idx, 1);*/
-        /*atomic_fetch_add(dm->counters[idx], 1);*/
-        /*check if any insertions are occurring*/
-        if (atomic_compare_exchange_strong(&dm->counter[idx], &expected, updated_cnt)) {
-            break;
-        }
-        ++attempts;
-    }
-
-    #endif
-    // need to also fetch add action counter
-    /*pthread_mutex_lock(dm->bucket_locks + idx);*/
-
     uint32_t n_lookups;
+
     n_lookups = 1 + atomic_fetch_add(&dm->counter[idx].lookup_counter, 1);
     /* spin until all insertions are complete, we can guarantee
      * that no new insertions will begin because lookup_counter is nonzero
      */
-    // this is hanging with new feature, probably because of an incrementation without dec of insertion counter somewhere
     while (atomic_load(&dm->counter[idx].insertion_counter)) {
         ++attempts;
     }
