@@ -44,10 +44,10 @@ void* insert_th(void* v_ins_arg) {
 // with the new lock free approach
 
 // ah, don't need new tests just yet, running the current code in multiple processes fails
-void concurrent_lookup_speed_test() {
+void concurrent_lookup_speed_test(void) {
 }
 
-uint32_t persistent_test() {
+uint32_t persistent_test(void) {
     struct diskmap dm;
     int keysz = 6;
     uint32_t vsz = 2;
@@ -56,7 +56,7 @@ uint32_t persistent_test() {
 
     srandom(time(NULL));
 
-    init_diskmap(&dm, 1, 10000, "PERSISTENT", hash);
+    init_diskmap(&dm, 10, 10000, "PERSISTENT", hash);
     if (check_valsz_diskmap(&dm, keysz, key, &vsz)) {
         /*printf("found k/v pair with vsz: %i\n", vsz);*/
         lval = calloc((vsz * 2) + 1, 1);
@@ -120,7 +120,7 @@ void large_insertion_test(int n_buckets, int n_threads, int ins_per_thread) {
     }
 }
 
-void isolate_bug() {
+void isolate_bug(void) {
     struct diskmap dm;
     uint32_t valsz, lval;
 
@@ -145,7 +145,7 @@ void isolate_bug() {
 REGISTER_DISKMAP(intint, int, int, NULL)
 #endif
 
-void pagesz_insertion_tst() {
+void pagesz_insertion_tst(void) {
     struct diskmap dm;
     long pgsz = sysconf(_SC_PAGE_SIZE);
     uint32_t valsz = pgsz - sizeof(struct entry_hdr) - sizeof(int) + 1;
@@ -172,7 +172,7 @@ void pagesz_insertion_tst() {
  * based on size
 */
 /*works just fine on thinkpad, seeing state 0 -1 on raspbi though, some bad stuff somewhere, maybe due to lack of memory fence*/
-int main() {
+int main(void) {
     /*
      * for (int i = 0; i < 4080; ++i) {
      *     persistent_test();
@@ -184,7 +184,7 @@ int main() {
      * return 1;
     */
     uint32_t prev_p = persistent_test(), p;
-    int total = 1000;
+    int total = 10000;
     /*while (1) {*/
     for (int i = 0; i < total; ++i) {
         /*printf("%i\n", i);*/
