@@ -32,6 +32,33 @@ struct page_tracker{
     uint8_t* mapped;
 };
 
+/* if *_exp_lock is set, this will be used as our expected value before swapping */
+struct counters update_counter(_Atomic struct counters* ctr, int8_t lookup_delta, int8_t insert_delta, uint32_t* lookup_exp_lock, 
+                               uint32_t* insert_exp_lock, int32_t max_attempts, uint32_t* attempts_required) {
+    int32_t attempts = 0;
+    struct counters c, target;
+    for (; attempts < max_attempts; ++attempts) {
+        if (!lookup_exp_lock || !insert_exp_lock) {
+            c = atomic_load(ctr);
+        }
+        if (lookup_exp_lock) {
+            c.lookup_counter = *lookup_exp_lock;
+        }
+        if (insert_exp_lock) {
+            c.insertion_counter = *insert_exp_lock;
+        }
+        target.lookup_counter = c.lookup_counter + lookup_delta;
+        target.insertion_counter = c.insertion_counter + insert_delta;
+        if (atomic_compare_exchange_strong(ctr, &c, target)) {
+            break;
+        }
+    }
+    if (attempts_required) {
+        *attempts_required = attempts;
+    }
+    return target;
+}
+
 void mmap_counter_struct(struct diskmap* dm) {
     char fn[30] = {0};
     int fd;
@@ -54,9 +81,14 @@ void mmap_counter_struct(struct diskmap* dm) {
     }
 
     if (!exists) {
+        // TODO: move above
+        struct counters c = {.lookup_counter = 0, .insertion_counter = 0};
         for (uint32_t i = 0; i < dm->n_buckets; ++i) {
-            atomic_init(&dm->counter[i].lookup_counter, 0);
-            atomic_init(&dm->counter[i].insertion_counter, 0);
+            atomic_init(&dm->counter[i], c);
+            /*
+             * atomic_init(&dm->counter[i].lookup_counter, 0);
+             * atomic_init(&dm->counter[i].insertion_counter, 0);
+            */
         }
     }
     /* it's okay to close file descriptors that are mmap()d */
@@ -102,7 +134,7 @@ void munmap_fine(struct page_tracker* pt) {
  *   5. decrement n_lookups // handled by caller
  */
 /* this is only to be called from within a lookup() with the guarantee that no insertion is underway */
-_Bool _internal_lookup_maybe_munmap(struct page_tracker* pt, struct counters* counters) {
+_Bool _internal_lookup_maybe_munmap(struct page_tracker* pt, _Atomic struct counters* counters) {
     _Bool ret = 0;
     /* guarantees that no other lookups will begin */
     atomic_fetch_add(&counters->insertion_counter, 1);
@@ -119,7 +151,7 @@ _Bool _internal_lookup_maybe_munmap(struct page_tracker* pt, struct counters* co
 /* ctrs is set if caller is lookup(), in which case it is not always safe to munmap() due to concurrent lookups
  * if this is set, mmap_fine_optimized() will opportunistically munmap() only if a guarantee of no double mmap()s can be made
  */
-void* mmap_fine_optimized(struct page_tracker* pt, struct counters* ctrs, int fd, _Bool rdonly, off_t offset, uint32_t size) {
+void* mmap_fine_optimized(struct page_tracker* pt, _Atomic struct counters* ctrs, int fd, _Bool rdonly, off_t offset, uint32_t size) {
     long pgsz = sysconf(_SC_PAGE_SIZE);
     /* calculate starting page */
     uint32_t pgno = offset / pgsz;
@@ -151,9 +183,9 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     int fd = open(dm->bucket_fns[idx], O_CREAT | O_RDWR, S_IRWXU);
     if (fd == -1)
         perror("OPEN");
-    off_t off = 0;
+    uint64_t off = 0;
     off_t insertion_offset = -1;
-    off_t fsz;
+    uint64_t fsz;
     struct entry_hdr* e;
     uint8_t* data;
     _Bool first = 0;
@@ -163,6 +195,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     struct counters target_cnt;
 
     int attempts = 0;
+    struct counters c;
 
     
     while (1) {
@@ -171,7 +204,8 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
             break;
         }
         ++attempts;
-        printf("  %i %i\n", dm->counter[idx].lookup_counter, dm->counter[idx].insertion_counter);
+        c = atomic_load(&dm->counter[idx]);
+        printf("  %i %i\n", c.lookup_counter, c.insertion_counter);
     }
 
     if (attempts > 0) {
@@ -228,7 +262,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         insertion_offset = off;
     }
 
-    if (insertion_offset + sizeof(struct entry_hdr) + keysz + valsz >= (uint64_t)fsz) {
+    if (insertion_offset + sizeof(struct entry_hdr) + keysz + valsz >= fsz) {
         ftruncate(fd, (fsz = MAX(fsz * 2, fsz + sizeof(struct entry_hdr) + keysz + valsz)));
     }
 
@@ -246,7 +280,25 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     /* this explicit munmap() is safe, as no other threads will be active in this section */
     munmap_fine(&pt);
     close(fd);
-    atomic_fetch_sub(&dm->counter[idx].insertion_counter, 1);
+    c = atomic_load(&dm->counter[idx]);
+    // TODO: does this have the intended behavior? is there any chance that counter[idx] has been ptr swapped? nope
+    // wait maybe actually, because of the CAS() calls in insert() that wait for 0 0
+    // is there a chance that we get 0 0 here, then insert() replaces with 0 1, THEN, we fetch_sub on the local insertion counter. damn...
+    // i need to use CAS here as well potentially, replace them with
+    // i shoudl only access using one method or another i believe
+
+    /*
+     * while (1) {
+     *     c = atomic_load(&dm->counter[idx]);
+     *     target.insertion_counter = c.insertion_counter - 1;
+     *     target.lookup_counter = c.lookup_counter;
+     *     atomic_compare_exchange_strong(&dm->counter[idx], &c, target);
+     * }
+    */
+    // TODO: do i need to explicitly CAS() with (0, 1)? shouldn't have to
+    update_counter(&dm->counter[idx], 0, -1, NULL, NULL, -1, NULL);
+
+    /*atomic_fetch_sub(&c.insertion_counter, 1);*/
 }
 
 /* TODO: is lock free approach worth the added complexity? run some tests */
@@ -259,20 +311,44 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     struct entry_hdr* e;
     uint8_t* data;
     struct page_tracker pt = {.n_pages = dm->pages_in_memory, .byte_offset_start = 0, .n_bytes = 0};
-    int attempts = 0;
-    uint32_t n_lookups;
+    uint32_t attempts;
+    uint32_t n_lookups, expected_insertions;
+    struct counters c_res;
 
-    n_lookups = 1 + atomic_fetch_add(&dm->counter[idx].lookup_counter, 1);
+    /*spinning will be built into update_counter()*/
+    /*need to increment lookup_counter, wait until there are no further insertions*/
+
+/*
+ * this will spin until we can update lookup, need to explicitly spin
+ * as well until there are no further lookup
+ * maybe i need to use a target state for one or both, 
+ * potentially allow this as an arg
+*/
+
+/*
+ * below we need to:
+ *     1: increment lookup counter
+ *     2: wait for insertion_counter == 0
+ * luckily, this can easily be achieved with the new update_counter()
+*/
+
+    /*update_counter(&dm->counter[idx], 1, 0, NULL, NULL, NULL);*/
+    /*n_lookups = 1 + atomic_fetch_add(&dm->counter[idx].lookup_counter, 1);*/
     /* spin until all insertions are complete, we can guarantee
      * that no new insertions will begin because lookup_counter is nonzero
      */
-    while (atomic_load(&dm->counter[idx].insertion_counter)) {
-        ++attempts;
-    }
+    /*while (atomic_load(&dm->counter[idx].insertion_counter)) {*/
+        /*++attempts;*/
+    /*}*/
+
+    expected_insertions = 0;
+    c_res = update_counter(&dm->counter[idx], 1, 0, NULL, &expected_insertions, -1, &attempts);
+    n_lookups = c_res.lookup_counter;
 
     if (attempts > 0) {
         printf("took %i attempts to safely begin a lookup\n", attempts);
     }
+
     if (n_lookups > 1) {
         printf("%i concurrent lookups!\n", n_lookups);
     }
