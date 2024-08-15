@@ -15,8 +15,9 @@ struct entry_hdr{
 // we can atomically increment each one of these separately, or both together in the case of
 // both the members themselves and the struct counters are atomic, so we can do either
 struct counters{
-    _Atomic uint32_t lookup_counter;
-    _Atomic uint32_t insertion_counter;
+    // TODO: try removing below atomic spec
+    uint32_t lookup_counter;
+    uint32_t insertion_counter;
 };
 
 struct diskmap{
@@ -24,8 +25,7 @@ struct diskmap{
     int (*hash_func)(void*, uint32_t, uint32_t);
     uint32_t n_buckets;
     char** bucket_fns;
-    //pthread_mutex_t* bucket_locks;
-    struct counters* _Atomic counter;
+    _Atomic struct counters* counter;
 
     /*
      * ah, this can't be used because this must be specific to a file...
