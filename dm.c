@@ -33,8 +33,8 @@ struct page_tracker{
 };
 
 /* if *_exp_lock is set, this will be used as our expected value before swapping */
-struct counters update_counter(_Atomic struct counters* ctr, int8_t lookup_delta, int8_t insert_delta, uint32_t* lookup_exp_lock, 
-                               uint32_t* insert_exp_lock, int32_t max_attempts, uint32_t* attempts_required, _Bool* success) {
+struct counters update_counter(_Atomic struct counters* ctr, int8_t lookup_delta, int8_t insert_delta, const uint32_t* lookup_exp_lock, 
+                               const uint32_t* insert_exp_lock, int32_t max_attempts, uint32_t* attempts_required, _Bool* success) {
     int32_t attempts = 0;
     struct counters c, target;
 
@@ -206,22 +206,27 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     _Bool first = 0;
     struct page_tracker pt = {.n_pages = dm->pages_in_memory, .byte_offset_start = 0, .n_bytes = 0};
 
-    const struct counters updated_cnt = {.lookup_counter = 0, .insertion_counter = 1};
-    struct counters target_cnt;
+    /*const struct counters updated_cnt = {.lookup_counter = 0, .insertion_counter = 1};*/
+    /*struct counters target_cnt;*/
 
-    int attempts = 0;
-    struct counters c;
+    uint32_t exp_ins = 0, exp_lk = 0;
+    uint32_t attempts;
+    /*struct counters c;*/
 
-    
-    while (1) {
-        memset(&target_cnt, 0, sizeof(struct counters));
-        if (atomic_compare_exchange_strong(&dm->counter[idx], &target_cnt, updated_cnt)) {
-            break;
-        }
-        ++attempts;
-        c = atomic_load(&dm->counter[idx]);
-        printf("  %i %i\n", c.lookup_counter, c.insertion_counter);
-    }
+/*
+ * 
+ *     
+ *     while (1) {
+ *         memset(&target_cnt, 0, sizeof(struct counters));
+ *         if (atomic_compare_exchange_strong(&dm->counter[idx], &target_cnt, updated_cnt)) {
+ *             break;
+ *         }
+ *         ++attempts;
+ *         c = atomic_load(&dm->counter[idx]);
+ *         printf("  %i %i\n", c.lookup_counter, c.insertion_counter);
+ *     }
+*/
+    update_counter(&dm->counter[idx], 0, 1, &exp_lk, &exp_ins, -1, &attempts, NULL);
 
     if (attempts > 0) {
         printf("acquired target insertion state in %i attempts\n", attempts);
@@ -232,6 +237,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
         fsz = 5 * sizeof(struct entry_hdr) + (keysz + valsz);
         first = 1;
     }
+
     lseek(fd, 0, SEEK_SET);
     while (!first && off < fsz) {
         data = mmap_fine_optimized(&pt, NULL, fd, 0, off, sizeof(struct entry_hdr) + keysz + valsz);
@@ -295,7 +301,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     /* this explicit munmap() is safe, as no other threads will be active in this section */
     munmap_fine(&pt);
     close(fd);
-    c = atomic_load(&dm->counter[idx]);
+    /*c = atomic_load(&dm->counter[idx]);*/
     // TODO: does this have the intended behavior? is there any chance that counter[idx] has been ptr swapped? nope
     // wait maybe actually, because of the CAS() calls in insert() that wait for 0 0
     // is there a chance that we get 0 0 here, then insert() replaces with 0 1, THEN, we fetch_sub on the local insertion counter. damn...
