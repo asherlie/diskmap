@@ -42,7 +42,7 @@ struct counters update_counter(_Atomic struct counters* ctr, int8_t lookup_delta
         *success = 0;
     }
 
-    for (; attempts < max_attempts; ++attempts) {
+    for (; attempts != max_attempts; ++attempts) {
         if (!lookup_exp_lock || !insert_exp_lock) {
             c = atomic_load(ctr);
         }
@@ -55,14 +55,14 @@ struct counters update_counter(_Atomic struct counters* ctr, int8_t lookup_delta
         target.lookup_counter = c.lookup_counter + lookup_delta;
         target.insertion_counter = c.insertion_counter + insert_delta;
         if (atomic_compare_exchange_strong(ctr, &c, target)) {
+            if (success) {
+                *success = 1;
+            }
             break;
         }
     }
     if (attempts_required) {
         *attempts_required = attempts;
-    }
-    if (success) {
-        *success = 1;
     }
     return target;
 }
@@ -142,6 +142,7 @@ void munmap_fine(struct page_tracker* pt) {
  *   5. decrement n_lookups // handled by caller
  */
 /* this is only to be called from within a lookup() with the guarantee that no insertion is underway */
+// this is causing "deadlocks" for concurrent lookups
 _Bool _internal_lookup_maybe_munmap(struct page_tracker* pt, _Atomic struct counters* counters) {
     _Bool ret;
     uint32_t no_insertions = 0;
@@ -206,26 +207,9 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     _Bool first = 0;
     struct page_tracker pt = {.n_pages = dm->pages_in_memory, .byte_offset_start = 0, .n_bytes = 0};
 
-    /*const struct counters updated_cnt = {.lookup_counter = 0, .insertion_counter = 1};*/
-    /*struct counters target_cnt;*/
-
     uint32_t exp_ins = 0, exp_lk = 0;
     uint32_t attempts;
-    /*struct counters c;*/
 
-/*
- * 
- *     
- *     while (1) {
- *         memset(&target_cnt, 0, sizeof(struct counters));
- *         if (atomic_compare_exchange_strong(&dm->counter[idx], &target_cnt, updated_cnt)) {
- *             break;
- *         }
- *         ++attempts;
- *         c = atomic_load(&dm->counter[idx]);
- *         printf("  %i %i\n", c.lookup_counter, c.insertion_counter);
- *     }
-*/
     update_counter(&dm->counter[idx], 0, 1, &exp_lk, &exp_ins, -1, &attempts, NULL);
 
     if (attempts > 0) {
@@ -363,7 +347,12 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     /*}*/
 
     expected_insertions = 0;
+    /*puts("attempting lkup");*/
+    // we get stuck attempting lookup sometimes, look into why. what's state here?
+    // probably has to do with insertion counter, actually definitely does, as this is the only
+    // reason we ever do not enter this critical region
     c_res = update_counter(&dm->counter[idx], 1, 0, NULL, &expected_insertions, -1, &attempts, NULL);
+    /*puts("done");*/
     n_lookups = c_res.lookup_counter;
 
     if (attempts > 0) {
