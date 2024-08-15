@@ -34,9 +34,14 @@ struct page_tracker{
 
 /* if *_exp_lock is set, this will be used as our expected value before swapping */
 struct counters update_counter(_Atomic struct counters* ctr, int8_t lookup_delta, int8_t insert_delta, uint32_t* lookup_exp_lock, 
-                               uint32_t* insert_exp_lock, int32_t max_attempts, uint32_t* attempts_required) {
+                               uint32_t* insert_exp_lock, int32_t max_attempts, uint32_t* attempts_required, _Bool* success) {
     int32_t attempts = 0;
     struct counters c, target;
+
+    if (success) {
+        *success = 0;
+    }
+
     for (; attempts < max_attempts; ++attempts) {
         if (!lookup_exp_lock || !insert_exp_lock) {
             c = atomic_load(ctr);
@@ -55,6 +60,9 @@ struct counters update_counter(_Atomic struct counters* ctr, int8_t lookup_delta
     }
     if (attempts_required) {
         *attempts_required = attempts;
+    }
+    if (success) {
+        *success = 1;
     }
     return target;
 }
@@ -135,7 +143,7 @@ void munmap_fine(struct page_tracker* pt) {
  */
 /* this is only to be called from within a lookup() with the guarantee that no insertion is underway */
 _Bool _internal_lookup_maybe_munmap(struct page_tracker* pt, _Atomic struct counters* counters) {
-    _Bool ret = 0;
+    _Bool ret;
     /* guarantees that no other lookups will begin */
     atomic_fetch_add(&counters->insertion_counter, 1);
     /* munmap() only if we're in the only current lookup thread */
@@ -145,6 +153,21 @@ _Bool _internal_lookup_maybe_munmap(struct page_tracker* pt, _Atomic struct coun
     }
     /* back to business as usual */
     atomic_fetch_sub(&counters->insertion_counter, 1);
+    return ret;
+
+
+    _Bool ret;
+    uint32_t no_insertions = 0;
+    struct counters c_ret;
+
+    update_counter(counters, 0, 1, NULL, &no_insertions, 1, NULL, &ret);
+    if (ret) {
+        /* no need to delcare ins number lock, at this point it's guaranteed to be 1 */
+        c_ret = update_counter(counters, 0, -1, NULL, NULL, -1, NULL);
+        if (c_ret.lookup_counter == 1) {
+        }
+    }
+
     return ret;
 }
 
@@ -296,7 +319,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
      * }
     */
     // TODO: do i need to explicitly CAS() with (0, 1)? shouldn't have to
-    update_counter(&dm->counter[idx], 0, -1, NULL, NULL, -1, NULL);
+    update_counter(&dm->counter[idx], 0, -1, NULL, NULL, -1, NULL, NULL);
 
     /*atomic_fetch_sub(&c.insertion_counter, 1);*/
 }
@@ -342,7 +365,7 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     /*}*/
 
     expected_insertions = 0;
-    c_res = update_counter(&dm->counter[idx], 1, 0, NULL, &expected_insertions, -1, &attempts);
+    c_res = update_counter(&dm->counter[idx], 1, 0, NULL, &expected_insertions, -1, &attempts, NULL);
     n_lookups = c_res.lookup_counter;
 
     if (attempts > 0) {
