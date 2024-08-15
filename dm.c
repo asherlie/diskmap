@@ -416,7 +416,8 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     cleanup:
     _internal_lookup_maybe_munmap(&pt, &dm->counter[idx]);
 
-    atomic_fetch_sub(&dm->counter[idx].lookup_counter, 1);
+    /*atomic_fetch_sub(&dm->counter[idx].lookup_counter, 1);*/
+    update_counter(&dm->counter[idx], -1, 0, NULL, NULL, -1, NULL, NULL);
     close(fd);
 
     return ret;
