@@ -135,7 +135,7 @@ void munmap_fine(struct page_tracker* pt) {
  * opportunistically munmap()s memory if no other lookup or insertion is occurring
  * otherwise, leaves it to be free()d at exit
  *
- *   1. increment n_insertions // handled by caller
+ *   1. increment n_insertions
  *   2. check if n_lookups == 1
  *   3. munmap if 2. is true
  *   4. decrement n_insertions
@@ -144,28 +144,20 @@ void munmap_fine(struct page_tracker* pt) {
 /* this is only to be called from within a lookup() with the guarantee that no insertion is underway */
 _Bool _internal_lookup_maybe_munmap(struct page_tracker* pt, _Atomic struct counters* counters) {
     _Bool ret;
-    /* guarantees that no other lookups will begin */
-    atomic_fetch_add(&counters->insertion_counter, 1);
-    /* munmap() only if we're in the only current lookup thread */
-    if (atomic_load(&counters->lookup_counter) == 1) {
-        ret = 1;
-        munmap_fine(pt);
-    }
-    /* back to business as usual */
-    atomic_fetch_sub(&counters->insertion_counter, 1);
-    return ret;
-
-
-    _Bool ret;
     uint32_t no_insertions = 0;
+    int32_t n_attempts = 1;
     struct counters c_ret;
 
-    update_counter(counters, 0, 1, NULL, &no_insertions, 1, NULL, &ret);
+    /* guarantees that no other lookups will begin by spoofing an increase in n_insertions */
+    c_ret = update_counter(counters, 0, 1, NULL, &no_insertions, n_attempts, NULL, &ret);
     if (ret) {
-        /* no need to delcare ins number lock, at this point it's guaranteed to be 1 */
-        c_ret = update_counter(counters, 0, -1, NULL, NULL, -1, NULL);
+        /* munmap() only if we're in the only current lookup thread */
         if (c_ret.lookup_counter == 1) {
+            munmap_fine(pt);
         }
+        /* no need to delcare ins number lock, at this point it's guaranteed to be 1 */
+        /* back to business as usual */
+        update_counter(counters, 0, -1, NULL, NULL, -1, NULL, NULL);
     }
 
     return ret;
