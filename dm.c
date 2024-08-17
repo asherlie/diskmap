@@ -103,7 +103,33 @@ void mmap_counter_struct(struct diskmap* dm) {
     close(fd);
 }
 
+_Bool flip_byte(char* str, int idx) {
+    if (idx == -1) {
+        return 1;
+    }
+    if (str[idx] == '9') {
+        str[idx] = '0'; 
+        return flip_byte(str, idx - 1);
+    } else {
+        ++str[idx];
+        return 0;
+    }
+}
+
+void increment_str_int(char* str, int* len) {
+    if (flip_byte(str, *len - 1)) {
+        *str = '1';
+        str[*len] = '0';
+        ++(*len);
+        str[*len] = 0;
+    }
+}
+
 void init_diskmap(struct diskmap* dm, uint32_t n_pages, uint32_t n_buckets, char* map_name, int (*hash_func)(void*, uint32_t, uint32_t)) {
+    char base_str[sizeof(dm->name) * 2 + 31];
+    int base_bytes;
+    int str_int_offset, intlen = 1;
+
     strcpy(dm->name, map_name);
     /* TODO: fix perms */
     mkdir(dm->name, 0777);
@@ -112,9 +138,13 @@ void init_diskmap(struct diskmap* dm, uint32_t n_pages, uint32_t n_buckets, char
     dm->bucket_fns = malloc(sizeof(char*) * dm->n_buckets);
     dm->pages_in_memory = n_pages;
 
+    base_bytes = snprintf(base_str, sizeof(base_str), "%s/%s_0", dm->name, dm->name);
+    str_int_offset = base_bytes - 1;
+
     for (uint32_t i = 0; i < dm->n_buckets; ++i) {
         dm->bucket_fns[i] = calloc(sizeof(dm->name)*2 + 31, 1);
-        snprintf(dm->bucket_fns[i], sizeof(dm->name)  + 31 + sizeof(dm->name), "%s/%s_%u", dm->name, dm->name, i);
+        memcpy(dm->bucket_fns[i], base_str, base_bytes + intlen - 1);
+        increment_str_int(base_str + str_int_offset, &intlen);
     }
 
     mmap_counter_struct(dm);
