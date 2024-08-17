@@ -69,6 +69,7 @@ uint32_t persistent_test(void) {
         key[0] = rand();
         key[1] = rand();
         key[2] = rand();
+        key[3] = rand();
         insert_diskmap(&dm, keysz, vsz+1, key, lval);
         free(lval);
     } else {
@@ -78,6 +79,14 @@ uint32_t persistent_test(void) {
     /*lookup_diskmap(&dm, keysz, key, &vsz);*/
     free_diskmap(&dm);
     return vsz;
+}
+
+void create_n_buckets_test(int n_buckets) {
+    struct diskmap dm;
+    init_diskmap(&dm, 1, n_buckets, "enby", hash);
+    for (int i = 0; i < n_buckets; ++i) {
+        insert_diskmap(&dm, sizeof(int), sizeof(int), &i, &i);
+    }
 }
 
 // TODO: return elapsed time
@@ -173,6 +182,10 @@ void pagesz_insertion_tst(void) {
 */
 /*works just fine on thinkpad, seeing state 0 -1 on raspbi though, some bad stuff somewhere, maybe due to lack of memory fence*/
 int main(void) {
+    /*
+     * create_n_buckets_test(1000);
+     * return 0;
+    */
     /*
      * for (int i = 0; i < 4080; ++i) {
      *     persistent_test();
