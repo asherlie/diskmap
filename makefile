@@ -1,6 +1,6 @@
 CC=gcc
 #CC=clang
-CFLAGS= -Wall -Wextra -Wpedantic -Werror -Wno-unused-result -O3
+CFLAGS= -Wall -Wextra -Wpedantic -Werror -Wno-unused-result -latomic -pthread -O3
 
 all: tst
 
