@@ -240,10 +240,11 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
     uint32_t exp_ins = 0, exp_lk = 0;
     uint32_t attempts;
 
+    // this fails sometimes when concurrent lookups == -1
     update_counter(&dm->counter[idx], 0, 1, &exp_lk, &exp_ins, -1, &attempts, NULL);
 
     if (attempts > 0) {
-        printf("acquired target insertion state in %i attempts\n", attempts);
+        printf("acquired target insertion state in %u attempts\n", attempts);
     }
 
     if ((fsz = lseek(fd, 0, SEEK_END)) == 0) {
@@ -386,11 +387,11 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     n_lookups = c_res.lookup_counter;
 
     if (attempts > 0) {
-        printf("took %i attempts to safely begin a lookup\n", attempts);
+        printf("took %u attempts to safely begin a lookup\n", attempts);
     }
 
     if (n_lookups > 1) {
-        printf("%i concurrent lookups!\n", n_lookups);
+        printf("%u concurrent lookups!\n", n_lookups);
     }
 
     if ((fsz = lseek(fd, 0, SEEK_END)) <= 0) {
