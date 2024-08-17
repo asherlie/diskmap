@@ -197,7 +197,7 @@ _Bool _internal_lookup_maybe_munmap(struct page_tracker* pt, _Atomic struct coun
 /* ctrs is set if caller is lookup(), in which case it is not always safe to munmap() due to concurrent lookups
  * if this is set, mmap_fine_optimized() will opportunistically munmap() only if a guarantee of no double mmap()s can be made
  */
-void* mmap_fine_optimized(struct page_tracker* pt, _Atomic struct counters* ctrs, int fd, _Bool rdonly, off_t offset, uint32_t size) {
+void* mmap_fine_optimized(struct page_tracker* pt, _Atomic struct counters* ctrs, int fd, _Bool rdonly, uint32_t offset, uint32_t size) {
     long pgsz = sysconf(_SC_PAGE_SIZE);
     /* calculate starting page */
     uint32_t pgno = offset / pgsz;
