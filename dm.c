@@ -492,21 +492,6 @@ _Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* va
     return iter_diskmap(dm, keysz, key, valsz, val, 0, 0, NULL, -1);
 }
 
-/*
- * void foreach_diskmap_internal(struct diskmap* dm, void* funcptr) {
- *     for (uint32_t i = 0; i < dm->n_buckets; ++i) {
- * #if 0
- *     hmm, i think i need to mmap_fine_optimized() for each bucket fn 
- *     then use internal lookup logic, split this out of the function to reuse code - starting at `while (off < fsz)`
- *     actually we just need this internal logic - get the fd, go from 0->fsz
- * 
- *     int fd = open(dm->bucket_fns[idx], delete ? O_RDWR : O_RDONLY);
- * #endif
- * 
- *     }
- * }
-*/
-
 void foreach_diskmap_const(struct diskmap* dm, uint32_t keysz, void (*funcptr)(uint32_t, void*, uint32_t, uint8_t*)) {
     uint32_t valsz;
     for (uint32_t i = 0; i < dm->n_buckets; ++i) {
