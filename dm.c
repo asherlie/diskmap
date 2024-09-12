@@ -361,7 +361,7 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
 }
 
 /* TODO: is lock free approach worth the added complexity? run some tests */
-_Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val,
+_Bool iter_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val,
                               _Bool delete, _Bool check_vsz_only, void (*foreach_func)(uint32_t, void*, uint32_t, uint8_t*), int idx_override) {
     int idx = (foreach_func) ? idx_override : dm->hash_func(key, keysz, dm->n_buckets);
     int fd = open(dm->bucket_fns[idx], delete ? O_RDWR : O_RDONLY);
@@ -489,7 +489,7 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
 }
 
 _Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val) {
-    return lookup_diskmap_internal(dm, keysz, key, valsz, val, 0, 0, NULL, -1);
+    return iter_diskmap(dm, keysz, key, valsz, val, 0, 0, NULL, -1);
 }
 
 /*
@@ -511,7 +511,7 @@ void foreach_diskmap_const(struct diskmap* dm, uint32_t keysz, void (*funcptr)(u
     uint32_t valsz;
     for (uint32_t i = 0; i < dm->n_buckets; ++i) {
         update_counter(&dm->counter[i], 1, 0, NULL, NULL, -1, NULL, NULL);
-        lookup_diskmap_internal(dm, keysz, NULL, &valsz, NULL, 0, 1, funcptr, i);
+        iter_diskmap(dm, keysz, NULL, &valsz, NULL, 0, 1, funcptr, i);
         update_counter(&dm->counter[i], -1, 0, NULL, NULL, -1, NULL, NULL);
     }
 }
@@ -520,7 +520,7 @@ void foreach_diskmap(struct diskmap* dm, uint32_t keysz, void (*funcptr)(uint32_
     uint32_t valsz;
     for (uint32_t i = 0; i < dm->n_buckets; ++i) {
         update_counter(&dm->counter[i], 0, 1, NULL, NULL, -1, NULL, NULL);
-        lookup_diskmap_internal(dm, keysz, NULL, &valsz, NULL, 0, 1, funcptr, (int)i);
+        iter_diskmap(dm, keysz, NULL, &valsz, NULL, 0, 1, funcptr, (int)i);
         update_counter(&dm->counter[i], 0, -1, NULL, NULL, -1, NULL, NULL);
     }
 }
@@ -528,9 +528,9 @@ void foreach_diskmap(struct diskmap* dm, uint32_t keysz, void (*funcptr)(uint32_
 /* remove_key_diskmap() sets e->vsz to 0, marking the region as reclaimable */
 _Bool remove_key_diskmap(struct diskmap* dm, uint32_t keysz, void* key) {
     uint32_t valsz;
-    return lookup_diskmap_internal(dm, keysz, key, &valsz, NULL, 1, 0, NULL, -1);
+    return iter_diskmap(dm, keysz, key, &valsz, NULL, 1, 0, NULL, -1);
 }
 
 _Bool check_valsz_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz) {
-    return lookup_diskmap_internal(dm, keysz, key, valsz, NULL, 0, 1, NULL, -1);
+    return iter_diskmap(dm, keysz, key, valsz, NULL, 0, 1, NULL, -1);
 }
