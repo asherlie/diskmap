@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "dm.h"
@@ -181,7 +182,47 @@ void pagesz_insertion_tst(void) {
  * based on size
 */
 /*works just fine on thinkpad, seeing state 0 -1 on raspbi though, some bad stuff somewhere, maybe due to lack of memory fence*/
+
+void p_foreach(uint32_t keysz, void* key, uint32_t valsz, uint8_t* data) {
+    int k;
+    /*printf("%u, %p, %u, \"%s\"\n", keysz, key, valsz, data);*/
+    memcpy(&k, key, keysz);
+    printf("%u, %i, %u, \"%s\"\n", keysz, k, valsz, data);
+    /*printf("%u, \"%s\"\n", valsz, data);*/
+}
+
+void foreach_test() {
+    struct diskmap dm;
+    int key = 3;
+    char str[16] = "asher";
+    init_diskmap(&dm, 1, 1, "foreach", hash);
+
+    insert_diskmap(&dm, sizeof(int), 6, &key, str);
+    key = 2;
+    insert_diskmap(&dm, sizeof(int), 6, &key, str);
+    key = -1;
+    insert_diskmap(&dm, sizeof(int), 6, &key, str);
+    key = -331;
+    insert_diskmap(&dm, sizeof(int), 6, &key, str);
+    key = 991;
+    str[0] = 'Z';
+    insert_diskmap(&dm, sizeof(int), 6, &key, str);
+
+    key = 1991;
+    str[5] = 'a';
+    insert_diskmap(&dm, sizeof(int), 6, &key, str);
+
+    puts("foreach_diskmap():");
+    foreach_diskmap(&dm, sizeof(int), p_foreach);
+
+    puts("foreach_diskmap_const():");
+    foreach_diskmap_const(&dm, sizeof(int), p_foreach);
+
+}
+
 int main(void) {
+    foreach_test();
+    /*return 0;*/
     /*
      * create_n_buckets_test(1000);
      * return 0;

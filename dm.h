@@ -58,3 +58,5 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
 _Bool remove_key_diskmap(struct diskmap* dm, uint32_t keysz, void* key);
 _Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val);
 _Bool check_valsz_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz);
+void foreach_diskmap_const(struct diskmap* dm, uint32_t keysz, void (*funcptr)(uint32_t, void*, uint32_t, uint8_t*));
+void foreach_diskmap(struct diskmap* dm, uint32_t keysz, void (*funcptr)(uint32_t, void*, uint32_t, uint8_t*));
