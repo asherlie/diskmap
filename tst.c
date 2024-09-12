@@ -4,7 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "dm.h"
+#include <dm.h>
 /*#include "easy_dm.h"*/
 
 int hash(void* key, uint32_t keysz, uint32_t n_buckets) {
