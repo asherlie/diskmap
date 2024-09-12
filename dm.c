@@ -54,6 +54,9 @@ struct counters update_counter(_Atomic struct counters* ctr, int8_t lookup_delta
         }
         target.lookup_counter = c.lookup_counter + lookup_delta;
         target.insertion_counter = c.insertion_counter + insert_delta;
+        if (target.insertion_counter == INT32_MAX) {
+            puts("reached error");
+        }
         if (atomic_compare_exchange_strong(ctr, &c, target)) {
             if (success) {
                 *success = 1;
@@ -175,7 +178,7 @@ void munmap_fine(struct page_tracker* pt) {
 // this is causing "deadlocks" for concurrent lookups
 _Bool _internal_lookup_maybe_munmap(struct page_tracker* pt, _Atomic struct counters* counters) {
     _Bool ret;
-    uint32_t no_insertions = 0;
+    const uint32_t no_insertions = 0;
     int32_t n_attempts = 1;
     struct counters c_ret;
 
@@ -188,6 +191,24 @@ _Bool _internal_lookup_maybe_munmap(struct page_tracker* pt, _Atomic struct coun
         }
         /* no need to delcare ins number lock, at this point it's guaranteed to be 1 */
         /* back to business as usual */
+
+        // looking for a -1 INSERTION, one of these is 
+
+        // OPTION A
+
+        /*this is the problem statement. something's happening here where we maybe don't increment properly first*/
+/*
+ *         before the below call, c_ret == {1, 1} as expected
+ *         but once we enter update_counter(), c == {1, 0}, another lookup() thread may be decrementing
+ *         could this be an ABA problem? prob not
+ *         also problem isn't solely caused by this, it occurs eventually even if i remove all calls to this function
+ * 
+ *         hmm, is it possible that we're just not being careful enough when entering critical sections? 
+ *         we should maybe be using a lock exp when we're not with update_counter()
+ *         as a starter, just make all locks use const like they should
+*/
+
+
         update_counter(counters, 0, -1, NULL, NULL, -1, NULL, NULL);
     }
 
@@ -332,14 +353,17 @@ void insert_diskmap(struct diskmap* dm, uint32_t keysz, uint32_t valsz, void* ke
      * }
     */
     // TODO: do i need to explicitly CAS() with (0, 1)? shouldn't have to
+
+    // OPTION B
     update_counter(&dm->counter[idx], 0, -1, NULL, NULL, -1, NULL, NULL);
 
     /*atomic_fetch_sub(&c.insertion_counter, 1);*/
 }
 
 /* TODO: is lock free approach worth the added complexity? run some tests */
-_Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val, _Bool delete, _Bool check_vsz_only) {
-    int idx = dm->hash_func(key, keysz, dm->n_buckets);
+_Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val,
+                              _Bool delete, _Bool check_vsz_only, void (*foreach_func)(uint32_t, void*, uint32_t, uint8_t*), int idx_override) {
+    int idx = (foreach_func) ? idx_override : dm->hash_func(key, keysz, dm->n_buckets);
     int fd = open(dm->bucket_fns[idx], delete ? O_RDWR : O_RDONLY);
     _Bool ret = 0;
     off_t fsz;
@@ -382,16 +406,18 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
     // we get stuck attempting lookup sometimes, look into why. what's state here?
     // probably has to do with insertion counter, actually definitely does, as this is the only
     // reason we ever do not enter this critical region
-    c_res = update_counter(&dm->counter[idx], 1, 0, NULL, &expected_insertions, -1, &attempts, NULL);
-    /*puts("done");*/
-    n_lookups = c_res.lookup_counter;
+    if (!foreach_func) {
+        c_res = update_counter(&dm->counter[idx], 1, 0, NULL, &expected_insertions, -1, &attempts, NULL);
+        /*puts("done");*/
+        n_lookups = c_res.lookup_counter;
 
-    if (attempts > 0) {
-        printf("took %u attempts to safely begin a lookup\n", attempts);
-    }
+        if (attempts > 0) {
+            printf("took %u attempts to safely begin a lookup\n", attempts);
+        }
 
-    if (n_lookups > 1) {
-        printf("%u concurrent lookups!\n", n_lookups);
+        if (n_lookups > 1) {
+            printf("%u concurrent lookups!\n", n_lookups);
+        }
     }
 
     if ((fsz = lseek(fd, 0, SEEK_END)) <= 0) {
@@ -417,48 +443,94 @@ _Bool lookup_diskmap_internal(struct diskmap* dm, uint32_t keysz, void* key, uin
         /* we don't need to mmap() e->cap here, only grab relevant bytes */
         e = mmap_fine_optimized(&pt, &dm->counter[idx], fd, 1, off, sizeof(struct entry_hdr) + e->ksz + e->vsz);
         data = (uint8_t*)e + sizeof(struct entry_hdr);
-        if (memcmp(data, key, keysz)) {
+
+        if (foreach_func) {
+            /*aha, the trick is that we need to offset keysz from data, this is awesome because it means we can include keysz, key*/
+            foreach_func(e->ksz, data, e->vsz, data + e->ksz);
             off += sizeof(struct entry_hdr) + e->cap;
             continue;
         }
 
-        ret = 1;
-        *valsz = e->vsz;
+        else {
+            if (memcmp(data, key, keysz)) {
+                off += sizeof(struct entry_hdr) + e->cap;
+                continue;
+            }
 
-        if (check_vsz_only) {
-            goto cleanup;
-        }
+            ret = 1;
+            *valsz = e->vsz;
 
-        if (delete) {
-            e->ksz += e->vsz;
-            e->vsz = 0;
+            if (check_vsz_only) {
+                goto cleanup;
+            }
+
+            if (delete) {
+                e->ksz += e->vsz;
+                e->vsz = 0;
+                break;
+            }
+
+            memcpy(val, data + keysz, *valsz);
             break;
         }
-
-        memcpy(val, data + keysz, *valsz);
-        break;
     }
 
     cleanup:
-    _internal_lookup_maybe_munmap(&pt, &dm->counter[idx]);
+    if (!foreach_func) {
+        /* this could hang if the foreach plans to alter data bc we'll have nonzero insertions */
+        _internal_lookup_maybe_munmap(&pt, &dm->counter[idx]);
 
-    /*atomic_fetch_sub(&dm->counter[idx].lookup_counter, 1);*/
-    update_counter(&dm->counter[idx], -1, 0, NULL, NULL, -1, NULL, NULL);
+        /*atomic_fetch_sub(&dm->counter[idx].lookup_counter, 1);*/
+        update_counter(&dm->counter[idx], -1, 0, NULL, NULL, -1, NULL, NULL);
+    }
     close(fd);
 
     return ret;
 }
 
 _Bool lookup_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz, void* val) {
-    return lookup_diskmap_internal(dm, keysz, key, valsz, val, 0, 0);
+    return lookup_diskmap_internal(dm, keysz, key, valsz, val, 0, 0, NULL, -1);
+}
+
+/*
+ * void foreach_diskmap_internal(struct diskmap* dm, void* funcptr) {
+ *     for (uint32_t i = 0; i < dm->n_buckets; ++i) {
+ * #if 0
+ *     hmm, i think i need to mmap_fine_optimized() for each bucket fn 
+ *     then use internal lookup logic, split this out of the function to reuse code - starting at `while (off < fsz)`
+ *     actually we just need this internal logic - get the fd, go from 0->fsz
+ * 
+ *     int fd = open(dm->bucket_fns[idx], delete ? O_RDWR : O_RDONLY);
+ * #endif
+ * 
+ *     }
+ * }
+*/
+
+void foreach_diskmap_const(struct diskmap* dm, uint32_t keysz, void (*funcptr)(uint32_t, void*, uint32_t, uint8_t*)) {
+    uint32_t valsz;
+    for (uint32_t i = 0; i < dm->n_buckets; ++i) {
+        update_counter(&dm->counter[i], 1, 0, NULL, NULL, -1, NULL, NULL);
+        lookup_diskmap_internal(dm, keysz, NULL, &valsz, NULL, 0, 1, funcptr, i);
+        update_counter(&dm->counter[i], -1, 0, NULL, NULL, -1, NULL, NULL);
+    }
+}
+
+void foreach_diskmap(struct diskmap* dm, uint32_t keysz, void (*funcptr)(uint32_t, void*, uint32_t, uint8_t*)) {
+    uint32_t valsz;
+    for (uint32_t i = 0; i < dm->n_buckets; ++i) {
+        update_counter(&dm->counter[i], 0, 1, NULL, NULL, -1, NULL, NULL);
+        lookup_diskmap_internal(dm, keysz, NULL, &valsz, NULL, 0, 1, funcptr, (int)i);
+        update_counter(&dm->counter[i], 0, -1, NULL, NULL, -1, NULL, NULL);
+    }
 }
 
 /* remove_key_diskmap() sets e->vsz to 0, marking the region as reclaimable */
 _Bool remove_key_diskmap(struct diskmap* dm, uint32_t keysz, void* key) {
     uint32_t valsz;
-    return lookup_diskmap_internal(dm, keysz, key, &valsz, NULL, 1, 0);
+    return lookup_diskmap_internal(dm, keysz, key, &valsz, NULL, 1, 0, NULL, -1);
 }
 
 _Bool check_valsz_diskmap(struct diskmap* dm, uint32_t keysz, void* key, uint32_t* valsz) {
-    return lookup_diskmap_internal(dm, keysz, key, valsz, NULL, 0, 1);
+    return lookup_diskmap_internal(dm, keysz, key, valsz, NULL, 0, 1, NULL, -1);
 }
